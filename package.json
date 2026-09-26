@@ -55,8 +55,8 @@
     "@prisma/client": "6.19.3",
     "better-auth": "1.7.1",
     "fflate": "^0.8.3",
-    "next": "15.5.23",
-    "nodemailer": "9.0.5",
+    "next": "15.5.24",
+    "nodemailer": "9.1.1",
     "react": "19.0.8",
     "react-dom": "19.0.8",
     "resend": "6.22.0",
@@ -79,7 +79,7 @@
   },
   "overrides": {
     "postcss": "^8.5.26",
-    "sharp": "^0.35.3",
+    "sharp": "^0.35.4",
     "deepmerge-ts": "^8.0.2"
   }
 }

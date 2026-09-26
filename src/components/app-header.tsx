@@ -28,6 +28,7 @@ const NAV: Record<Actor["role"], Array<{ label: string; href: string }>> = {
     { label: "The pass", href: "/queue" },
     { label: "The rail", href: "/board" },
     { label: "The books", href: "/me" },
+    { label: "Materials", href: "/admin/catalog" },
     { label: "History", href: "/history" },
     // The board, not the triage queue: the owner wants to see everything that
     // has been asked for, and triage is one button away on that page.

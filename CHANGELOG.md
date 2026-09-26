@@ -7,6 +7,15 @@ Notable changes. Every entry names a released version; deployments pin
 
 ### Added
 
+- **Materials and colours are owner-managed.** `/admin/catalog` replaces the
+  fixed compile-time list with an ordered catalogue. The owner can add, rename,
+  temporarily hide, remove, and reorder materials and their colours. Swatches
+  can be solid, a two-colour gradient, or an explicit “whatever” rainbow with
+  a question mark. Uploads validate against the live catalogue on the server;
+  old tickets retain label, representative colour, rendered swatch, and mode
+  snapshots when catalogue entries later change. `npm run verify:catalog`
+  covers the owner-only forms, ordering, validation, and snapshot contract.
+
 - **`/admin/audit` is a dashboard now, not just a log.** The page was built on
   the argument that a screen somebody glances at beats alerts nobody tunes —
   which only holds if somebody actually looks, and a wall of rows is not

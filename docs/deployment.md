@@ -314,6 +314,102 @@ The seed is an upsert, so it is safe on every start and keeps the admin's name
 in step with the environment — but it will refuse to create a *second* admin,
 and so will the database, and it never resets a password that already exists.
 
+### The object store, and the image that is built but not used
+
+Nothing here needs doing. This section exists because the repository contains
+two MinIO images and it should be obvious which one you are running.
+
+**What runs:** the mirror, pinned by digest in both compose files. It is the
+last upstream community release, `RELEASE.2025-09-07T16-13-09Z`, copied into
+this project's registry because MinIO withdrew it from Docker Hub (404) and
+gated its quay.io repository against anonymous pulls. It runs as **root**, as
+the upstream image always did, and it is **linux/amd64** only because it was
+copied from a cached image of that platform.
+
+**What also exists:** `docker/minio/Dockerfile` builds MinIO and `mc` from the
+AGPL source at the same release, for amd64 and arm64, running as uid 1000.
+`.github/workflows/minio-image.yml` publishes and signs it. **Nothing points at
+it.** It was built and documented ahead of being adopted, which left this
+section briefly describing an upgrade nobody could perform.
+
+Adopting it would mean one step that is not pull-and-restart. `/data` is a bind
+mount, so the host directory's ownership decides whether the server can write,
+and existing model storage is owned by the root the current container runs as:
+
+```bash
+docker compose --env-file .env.docker -f docker-compose.prod.yml down
+docker run --rm -v "$DATA_ROOT/models:/data" alpine chown -R 1000:1000 /data
+docker compose --env-file .env.docker -f docker-compose.prod.yml up -d
+```
+
+Inside a container deliberately, for the same reason the backup instructions
+are: the files are root-owned so doing it as yourself fails, and `sudo chown` on
+a host where your own uid is not 1000 writes the wrong number. Skipping it is
+safe in the way that matters — MinIO exits with *"Unable to write to the
+backend"* rather than starting half-working.
+
+That swap is **deliberately not scheduled**, because MinIO is on its way out
+rather than in. Its community edition is unmaintained: the newest server release
+ships byte-identical vulnerable dependencies, `mc` has not been tagged in over a
+year, and the from-source image still carries 63 HIGH/CRITICAL advisories that
+no upgrade fixes. The direction is to stop running an object store at all — the
+app already proxies every byte and uses six S3 calls that map directly onto
+filesystem operations. Asking for a chown of live storage, for an image with a
+deletion date, is maintenance paid twice.
+
+### Moving the models onto the filesystem
+
+The object store is being removed — see the reasoning above. The first step is
+to copy every model out of MinIO and prove the copy is complete. **It changes
+nothing about how the app runs.** The app keeps reading from MinIO afterwards,
+and rolling this back is deleting what it wrote.
+
+```bash
+docker compose --env-file .env.docker \
+  -f docker-compose.prod.yml -f docker-compose.storage-migration.yml \
+  run --rm --build migrate-storage
+```
+
+It gets its own overlay and its own service because neither existing image can
+run it: the runner carries only the Next standalone bundle, and the migrator
+deliberately installs three packages and copies only `prisma/`. That overlay
+builds from source, runs inside the compose network (production publishes no
+port for MinIO, so the host cannot reach it), and hands the files it writes to
+uid 1001 — the app's user — so the app can read them afterwards.
+
+Take a snapshot first if you are on ZFS. One recursive snapshot makes the whole
+exercise reversible, and it costs nothing:
+
+```bash
+zfs snapshot -r storage/applications/ppp@pre-storage-migration
+```
+
+**Do not copy the directory instead.** MinIO does not store objects as files.
+Each one is a directory named after the key, and anything under its inline
+threshold lives *inside* `xl.meta` rather than beside it — on the dataset this
+was written against, 160 of 179 objects. A `cp -r` recovers the handful that
+have a separate part file and silently loses the rest: the tree is there, the
+filenames are there, every ticket page renders, and the only symptom is that
+opening a model fails. The bytes come out through the S3 API or not at all.
+The script refuses to run at all if you point it at MinIO's own directory.
+
+What it reports, and what to do about it:
+
+| | |
+| --- | --- |
+| `verified N / N` and exit 0 | every row in the database has a readable file of the right size. Done. |
+| exit 1, with `MISSING` / `SIZE` / `CONTENT` rows | some models did not arrive. Nothing has been removed and the app is unaffected — fix the cause and run it again. |
+| exit 2 | you pointed `MODELS_ROOT` at MinIO's data directory. It refused rather than mixing plain files into the object store's layout. |
+
+It verifies against **the database**, not against MinIO: every `Story` row must
+have a file, of the size the row records, whose first bytes are still the model
+they claim to be. Asking MinIO whether it exported everything is asking the
+wrong witness.
+
+Re-running is safe and cheap — it skips whatever is already correct — so run it
+once now and again immediately before the app is switched over, to pick up
+anything uploaded in between.
+
 ### What to back up
 
 Everything is under `DATA_ROOT`: `db/` (Postgres) and `models/` (the uploaded

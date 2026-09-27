@@ -15,6 +15,40 @@ Notable changes. Every entry names a released version; deployments pin
   old tickets retain label, representative colour, rendered swatch, and mode
   snapshots when catalogue entries later change. `npm run verify:catalog`
   covers the owner-only forms, ordering, validation, and snapshot contract.
+- **`npm run migrate:storage` — copy every model out of MinIO, and prove the
+  copy is complete.** The first step of removing the object store, and it
+  changes nothing about how the app runs: the app keeps reading from MinIO, and
+  rolling back is deleting what the script wrote.
+
+  It exists as code rather than a documented `mc` command because of one fact
+  about MinIO's on-disk format. Objects are not files — each is a directory
+  named after the key, and anything under the inline threshold lives *inside*
+  `xl.meta` rather than beside it. On the dataset this was written against, 160
+  of 179. So `cp -r` recovers the nineteen that have a separate part file and
+  silently loses the rest: the tree is there, the filenames are there, every
+  ticket page renders, and the only symptom is that opening a model fails. The
+  bytes come out through the S3 API or not at all.
+
+  The verification is the half that matters, and it interrogates the
+  **database**, not MinIO — asking the object store whether it exported
+  everything is asking the wrong witness, since it would confirm all 179 while
+  160 arrived empty. Every `Story` row must have a readable file of the size the
+  row records, whose first bytes are still the model it claims to be: a binary
+  STL states its own triangle count, and `84 + count × 50` has to equal the file
+  length, which is the same structural check the upload validator makes. A
+  zero-filled file of the right size passes a size comparison and fails this.
+
+  It refuses to exit 0 with a single row unaccounted for, and it refuses to run
+  at all if pointed at MinIO's own data directory — the one mistake that would
+  not be recoverable, so it is blocked in code rather than in prose. Writes are
+  atomic (temp file, `fsync`, rename, `fsync` the directory), because S3 gave
+  that for free and a database row will claim the file is whole. Re-running
+  skips what is already correct, so it can be run now and again just before the
+  switch to pick up anything uploaded in between.
+
+  Verified by breaking it on purpose: truncating one exported file and deleting
+  another makes it exit 1 and name both, and a re-run repairs exactly those two
+  and nothing else. A verifier nobody has watched fail is not a verifier.
 
 - **`/admin/audit` is a dashboard now, not just a log.** The page was built on
   the argument that a screen somebody glances at beats alerts nobody tunes —
@@ -264,6 +298,60 @@ Notable changes. Every entry names a released version; deployments pin
 
 ### Changed
 
+- **The Requirements table promised a Pi 5, and never delivered one.** It listed
+  "a NAS, a Pi 5, a VPS, a spare laptop" as hosts. A Pi 5 is arm64, and
+  `ppp-app` and `ppp-migrate` have only ever been published for `linux/amd64` —
+  `release-images.yml` sets no `platforms:`, so buildx quietly built for the
+  runner it happened to be on. An arm64 host has always failed at
+  `docker compose pull`, and nothing said so.
+
+  The row now says amd64 and explains why, rather than naming a board that
+  cannot run it. The previous wording — added alongside the MinIO mirror — blamed
+  that mirror's single architecture, which was wrong in a more interesting way:
+  the mirror was amd64-only, but so were the app images, so MinIO was never the
+  binding constraint. Both statements were made without checking the manifest
+  that would have settled it.
+
+  Building for arm64 is a reasonable thing to want, and it is not what this
+  fixes. A second architecture that the suites never run against is a platform
+  shipped on faith, which is the same mistake as a registry nobody tried
+  anonymously; and running them twice is not a commitment this project makes.
+  Correcting the sentence is the honest half of the fix, and it is the half that
+  costs nobody anything.
+
+
+- **The object store is built from source, runs as uid 1000, and needs one
+  chown to move to.** This is the only upgrade step in this project that is not
+  pull-and-restart, so it is first in the list.
+
+  MinIO withdrew its community distribution while the previous change sat
+  unmerged: Docker Hub 404s, quay.io refuses an anonymous pull, and dl.min.io
+  answers 410 for the server binary *and* for `mc`, on every architecture —
+  which also kills upstream's own release Dockerfile, since it is a downloader.
+  The source is still public and AGPL-3.0, so `docker/minio/Dockerfile` compiles
+  it: the same `RELEASE.2025-09-07T16-13-09Z` the deployment already runs, plus
+  `mc` because the healthcheck is `mc ready local`. Same release means the same
+  on-disk format, so the bytes need no migration.
+
+  The **ownership** does. Building our own image made the scanner able to see
+  what upstream's image had always done — run as root — and rather than record
+  an exception for it, the image now runs as 1000:1000. `/data` is a bind mount,
+  so the host directory decides, and existing model storage is owned by root.
+  Stop the stack, `docker run --rm -v "$DATA_ROOT/models:/data" alpine chown -R
+  1000:1000 /data`, start it again. Skip it and MinIO exits with
+  *"Unable to write to the backend"* rather than starting half-working, which is
+  the right failure. Postgres is untouched.
+
+  Doing it inside a container is not fussiness: the files are root-owned so
+  doing it as yourself fails, and `sudo chown` on a host where your uid is not
+  1000 is how the wrong number gets written. Full instructions in
+  [deployment](docs/deployment.md).
+
+  This also restores arm64. The mirror that unblocked CI was amd64 only because
+  it was copied from a cached image; a source build is not limited that way, and
+  the image is published for `linux/amd64` and `linux/arm64`.
+
+
 - **"Feature requests" in the nav, and it goes to the board.** The owner's nav
   item was labelled *Requests* and pointed at `/frr/queue`, the triage view —
   so the owner's way in was the work list while everyone else's was the board.
@@ -339,6 +427,32 @@ Notable changes. Every entry names a released version; deployments pin
   and orphan `v0.1.0` in exchange for tidiness.
 
 ### Fixed
+
+- **Every build depended on Google answering, and the failure did not say so.**
+  The four faces came from `next/font/google`, which downloads them at build
+  time. So CI's `verify` gate, `release-images.yml` and the README's own
+  build-from-source quick start all needed fonts.googleapis.com reachable and
+  willing — and when it was not, the build died with a webpack stack trace
+  pointing at `@next/font/dist/google/loader.js`, which is nowhere near where
+  anyone would look. Caught by it happening, not by reasoning about it.
+
+  The woff2 files now live in `src/app/fonts/` and load through
+  `next/font/local`. Latin subset, the same faces, 124 kB in total; Archivo is a
+  single variable file covering the four weights it used to fetch separately.
+  Nothing is fetched at build or at runtime, which is also why `font-src` can
+  stay `'self'`.
+
+  It was an inconsistency as much as a fragility: Swagger UI is copied out of
+  `node_modules` at build time precisely because "a CDN would be unreachable on
+  a NAS with no outbound internet", and the app's own typefaces were exempt from
+  that reasoning for no reason anybody had written down.
+
+  Verified by building the image with `fonts.googleapis.com` and
+  `fonts.gstatic.com` pointed at 127.0.0.1 — the build that used to need them
+  now completes without them. All four are SIL OFL 1.1; the licence and the
+  per-family copyright notices travel with the files in
+  `src/app/fonts/README.md`.
+
 
 - **The stack could not be pulled any more, and nothing said so.** MinIO
   stopped publishing its community image to Docker Hub — `minio/minio` answers

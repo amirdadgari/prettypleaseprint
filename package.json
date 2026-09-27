@@ -43,7 +43,8 @@
     "verify:benefits": "tsx scripts/verify-benefits.ts",
     "verify:catalog": "tsx scripts/verify-catalog.ts",
     "verify:api": "tsx scripts/verify-api.ts",
-    "vendor:swagger": "tsx scripts/vendor-swagger.ts"
+    "vendor:swagger": "tsx scripts/vendor-swagger.ts",
+    "migrate:storage": "tsx scripts/export-storage.ts"
   },
   "prisma": {
     "seed": "tsx prisma/seed.ts"

@@ -4,8 +4,9 @@
 
 ## Running it in containers
 
-The dev stack (`docker-compose.yml`) runs Postgres, MinIO and Mailpit while the
-app runs on the host under `npm run dev`. That is the loop for building.
+The dev stack (`docker-compose.yml`) runs Postgres and Mailpit while the app runs
+on the host under `npm run dev`. That is the loop for building. Model files go to
+`./data/uploads`; there is no storage service to run.
 
 `docker-compose.prod.yml` runs **everything**, including the app, and is also
 the basis for deployment:
@@ -20,7 +21,7 @@ docker compose --env-file .env.docker \
 App on :3000, Mailpit on :8025 — every invitation and sign-in link lands there,
 so the whole flow is clickable without a mail server.
 
-Five compose files, each with one job:
+Six compose files, each with one job:
 
 | File | Job |
 | --- | --- |
@@ -29,6 +30,7 @@ Five compose files, each with one job:
 | `docker-compose.build.yml` | puts the build context back, for local work and CI |
 | `docker-compose.test.yml` | publishes the ports a local run and the host-side suites need |
 | `docker-compose.proxy.yml` | the proxy network, for any deployment behind a reverse proxy |
+| `docker-compose.tunnel.yml` | a Cloudflare Tunnel connector, for a deployment with no inbound path at all |
 
 `prod` consumes rather than builds on purpose: a deployment then needs no
 source tree and no toolchain, and what runs there is byte-for-byte what CI
@@ -45,9 +47,9 @@ unmigrated schema. The **runner** is the slim runtime — standalone Next output
 non-root, with a healthcheck.
 
 To run the verification suites against the containerised app, add
-`-f docker-compose.test.yml`, which publishes Postgres, MinIO and Mailpit's
-SMTP port so the host-side scripts can reach them. **Never apply that overlay
-on a deployed host** — those are internal services.
+`-f docker-compose.test.yml`, which publishes Postgres and Mailpit's SMTP port so
+the host-side scripts can reach them. **Never apply that overlay on a deployed
+host** — those are internal services.
 
 ## Deploying to TrueNAS SCALE, behind Nginx Proxy Manager
 
@@ -314,48 +316,31 @@ The seed is an upsert, so it is safe on every start and keeps the admin's name
 in step with the environment — but it will refuse to create a *second* admin,
 and so will the database, and it never resets a password that already exists.
 
-### The object store, and the image that is built but not used
+### There is no object store
 
-Nothing here needs doing. This section exists because the repository contains
-two MinIO images and it should be obvious which one you are running.
+Model files are files, in `$DATA_ROOT/uploads`. The compose files define no
+storage service, nothing holds an S3 credential, and there is no image to keep
+current.
 
-**What runs:** the mirror, pinned by digest in both compose files. It is the
-last upstream community release, `RELEASE.2025-09-07T16-13-09Z`, copied into
-this project's registry because MinIO withdrew it from Docker Hub (404) and
-gated its quay.io repository against anonymous pulls. It runs as **root**, as
-the upstream image always did, and it is **linux/amd64** only because it was
-copied from a cached image of that platform.
+Getting here took a while and the route is worth knowing, because it is the
+reason this section exists at all rather than a paragraph about buckets. MinIO
+withdrew its community distribution mid-2026: the Docker Hub repository began
+answering 404, quay.io stopped serving anonymous pulls, and dl.min.io answered
+410 for the server binary *and* for `mc` on every architecture — which also
+killed upstream's own release Dockerfile, since it is a downloader. This project
+mirrored the last release, then compiled its own from the AGPL source for two
+architectures, and that image still carried 63 HIGH/CRITICAL advisories which no
+upgrade fixed, because the newest upstream release shipped byte-identical
+vulnerable dependencies.
 
-**What also exists:** `docker/minio/Dockerfile` builds MinIO and `mc` from the
-AGPL source at the same release, for amd64 and arm64, running as uid 1000.
-`.github/workflows/minio-image.yml` publishes and signs it. **Nothing points at
-it.** It was built and documented ahead of being adopted, which left this
-section briefly describing an upgrade nobody could perform.
+At which point the honest question was not which registry to chase but why a
+five-person office needed an S3 API to put a few hundred megabytes of STL on a
+disk the app already had mounted. It did not. The app made six calls — head and
+create a bucket, put, get, delete, copy — and every byte was already proxied
+through the app because the deployment never published a port for storage.
 
-Adopting it would mean one step that is not pull-and-restart. `/data` is a bind
-mount, so the host directory's ownership decides whether the server can write,
-and existing model storage is owned by the root the current container runs as:
-
-```bash
-docker compose --env-file .env.docker -f docker-compose.prod.yml down
-docker run --rm -v "$DATA_ROOT/models:/data" alpine chown -R 1000:1000 /data
-docker compose --env-file .env.docker -f docker-compose.prod.yml up -d
-```
-
-Inside a container deliberately, for the same reason the backup instructions
-are: the files are root-owned so doing it as yourself fails, and `sudo chown` on
-a host where your own uid is not 1000 writes the wrong number. Skipping it is
-safe in the way that matters — MinIO exits with *"Unable to write to the
-backend"* rather than starting half-working.
-
-That swap is **deliberately not scheduled**, because MinIO is on its way out
-rather than in. Its community edition is unmaintained: the newest server release
-ships byte-identical vulnerable dependencies, `mc` has not been tagged in over a
-year, and the from-source image still carries 63 HIGH/CRITICAL advisories that
-no upgrade fixes. The direction is to stop running an object store at all — the
-app already proxies every byte and uses six S3 calls that map directly onto
-filesystem operations. Asking for a chown of live storage, for an image with a
-deletion date, is maintenance paid twice.
+If you are upgrading from a release that had one, the next section is the step
+that matters.
 
 ### Moving the models onto the filesystem
 
@@ -364,11 +349,36 @@ to copy every model out of MinIO and prove the copy is complete. **It changes
 nothing about how the app runs.** The app keeps reading from MinIO afterwards,
 and rolling this back is deleting what it wrote.
 
+**Stop the stack first.** This is the one step in the migration that can lose
+data, and it is not obvious: the overlay brings its own MinIO, and a deployment
+that has not been upgraded yet is still running the previous release's one
+against the same `$DATA_ROOT/models`. The container names differ, so Compose
+starts the second quite happily — two MinIO processes on one data directory,
+which is not supported and is exactly the data you are trying to rescue. The
+ordinary path walks straight into it: pull the release, run the migration, then
+deploy. The old container survives the `git pull`.
+
 ```bash
+# 1. snapshot, if you are on ZFS
+zfs snapshot -r storage/applications/ppp@pre-storage-migration
+
+# 2. stop everything
+docker compose --env-file .env.docker -f docker-compose.prod.yml down
+
+# 3. migrate, and read the verification before going further
 docker compose --env-file .env.docker \
   -f docker-compose.prod.yml -f docker-compose.storage-migration.yml \
-  run --rm --build migrate-storage
+  run --rm migrate-storage
+
+# 4. only once it says every model is accounted for
+docker compose --env-file .env.docker -f docker-compose.prod.yml up -d
 ```
+
+It runs as a one-shot container named `ppp-storage-migration`, built from the
+Dockerfile's `builder` stage and hidden behind a `migration` profile so no `up`
+can start it by accident. Add whatever overlay your deployment normally uses
+(`docker-compose.tunnel.yml`, `docker-compose.proxy.yml`) to steps 2 and 4 —
+step 3 needs only these two.
 
 It gets its own overlay and its own service because neither existing image can
 run it: the runner carries only the Next standalone bundle, and the migrator
@@ -410,10 +420,223 @@ Re-running is safe and cheap — it skips whatever is already correct — so run
 once now and again immediately before the app is switched over, to pick up
 anything uploaded in between.
 
+### Removing the old object store's directory
+
+Once the app is on the filesystem and you are satisfied, `$DATA_ROOT/models`
+is the object store's leftovers and can go. It will not delete as yourself:
+MinIO ran as root, so the tree is root-owned, and the same is true in reverse
+of `uploads/`, which belongs to the app's uid 1001.
+
+```bash
+docker run --rm -v "$DATA_ROOT:/data" alpine rm -rf /data/models
+```
+
+From inside a container, for exactly the reason the backup instructions are:
+your own account does not own these files. Reading them does work — `uploads/`
+is mode 644 with 755 directories on purpose, so a `tar` or a snapshot needs no
+root. It is only removal that does.
+
+Take the snapshot first, and do this last. Nothing else in the migration is
+irreversible; this is.
+
 ### What to back up
 
-Everything is under `DATA_ROOT`: `db/` (Postgres) and `models/` (the uploaded
+Everything is under `DATA_ROOT`: `db/` (Postgres) and `uploads/` (the uploaded
 files). A ZFS snapshot of the dataset captures both. `.env.docker` holds the
 secrets and is not in the repo — keep it somewhere you will still have it after
 a rebuild, because losing `BETTER_AUTH_SECRET` invalidates every session and
 losing `DB_PASSWORD` locks you out of the database.
+
+## Deploying behind a Cloudflare Tunnel
+
+The alternative to the section above, and the better answer on a connection
+whose public address is not yours to keep. `docker-compose.tunnel.yml` runs a
+`cloudflared` connector beside the app:
+
+```bash
+docker compose --env-file .env.docker \
+  -f docker-compose.prod.yml -f docker-compose.tunnel.yml up -d
+```
+
+Use it **instead of** `docker-compose.proxy.yml`, not alongside it. Running
+both leaves two ways in, and the second one is the one nobody remembers.
+
+The difference is direction. A proxy deployment waits to be connected to, so it
+needs a public address, an `A` record pointing at it, and 80/443 forwarded to
+the host — three things that must all stay true. A tunnel deployment connects
+outward: `cloudflared` opens the connection to Cloudflare and requests arrive
+back down it. Nothing needs to be reachable from the internet.
+
+That removes a whole class of outage. The deployment this file was written for
+was migrated by its ISP from DSL to cable; the old address was handed back, the
+`A` record went on pointing at an IP that no longer routed, and Cloudflare
+answered **522** for as long as it took someone to notice — with the app
+healthy, the certificate valid and the origin serving correctly the entire
+time. Nothing in the app's own logs said anything was wrong, because from the
+app's point of view nothing was.
+
+It also retires this hostname's origin certificate. Cloudflare terminates TLS
+at the edge and the tunnel itself is encrypted, so the app needs no Let's
+Encrypt certificate at all — one fewer thing with an expiry date. (Only *its*
+certificate: a wildcard that other hostnames still use stays; see below.)
+
+`APP_URL` and `PASSKEY_RP_ID` do not change, because the hostname does not.
+That matters more than it looks: passkeys are bound to the RP ID permanently,
+so a migration that altered it would silently invalidate every passkey already
+registered.
+
+### Setting it up
+
+**In the Cloudflare dashboard**, Zero Trust → Networks → Tunnels → *Create a
+tunnel* → *Cloudflared*. Name it, then copy the connector token it shows.
+
+**In `.env.docker`:**
+
+```bash
+CF_TUNNEL_TOKEN=eyJhIjoi...        # the connector token, a credential
+TRUST_PROXY_HEADERS=cloudflare     # CF-Connecting-IP; see below
+```
+
+**Back in the dashboard**, on that tunnel, add one Public Hostname:
+
+| | |
+| --- | --- |
+| Subdomain / Domain | `ppp` · `example.org` |
+| Type | `HTTP` |
+| URL | `ppp-app:3000` — the container name, not an IP, and not `localhost` |
+
+`localhost` there would be the connector's own container, which is the mistake
+this table exists to prevent. Adding the hostname writes the proxied `CNAME`
+for you; **delete the old `A` record afterwards** rather than leaving it as a
+second, wrong answer.
+
+Then bring the stack up with the overlay, and once it serves, dismantle **this
+app's** old way in: delete its Proxy Host in Nginx Proxy Manager, and stop
+passing `docker-compose.proxy.yml`, so `ppp-app` is no longer on the proxy
+network. Until you do, the app is still directly reachable — and
+`TRUST_PROXY_HEADERS=cloudflare` is only honest while it is not.
+
+**Stop there if anything else is served from the same host.** The 80/443 port
+forwards on the router, the proxy itself and a wildcard certificate are
+usually shared: every other hostname still proxied the old way arrives through
+them. Remove them and those sites go down with **522** — Cloudflare cannot
+reach an origin that no longer answers — while ppp, on its tunnel, stays up and
+makes the cause harder to see. The forwards and the certificate can only go
+once the *last* hostname behind them has moved to a tunnel too; adding each one
+as another Public Hostname on a tunnel is how they get there.
+
+### Turn Rocket Loader off, or nobody can sign in
+
+Reported by NelsonFx on the pull request that added this overlay, and it is the
+first thing an orange-clouded deployment is likely to hit.
+
+Rocket Loader (Cloudflare dashboard → Speed → Optimization) rewrites every
+`<script>` on the page to load through its own deferred loader. This app's
+production CSP is:
+
+```
+script-src 'self' 'nonce-<per request>' 'strict-dynamic'
+```
+
+— with no `unsafe-inline`, on purpose. Next hydrates from an inline bootstrap
+script carrying that request's nonce, and `strict-dynamic` lets it pull in the
+rest of the chunk graph. Rocket Loader's rewritten scripts **do not carry the
+nonce**, so the browser refuses them, hydration never happens, and no client-side
+code runs at all.
+
+What you see is worse than an error. Every page renders correctly, because the
+server sent the HTML — the board, the ticket, the sign-in form all look right.
+They simply do nothing. Sign-in is where it bites first, because `/signin` is a
+client component and the passkey and password paths both go through the auth
+client, but it takes the upload progress bar, the 3D viewer and the Activity menu
+with it. The console shows CSP violations; nothing in the app's own logs does,
+because the requests never arrive.
+
+**Fix:** turn Rocket Loader off, either globally or with a Configuration Rule
+scoped to this hostname.
+
+There is no way to keep both. The alternative is adding `unsafe-inline` to
+`script-src`, which discards what the nonce is there for — see
+[the security audit](security-audit.md), where the nonce-and-`strict-dynamic`
+policy is the whole answer to "no Content-Security-Policy". A page-speed feature
+is not worth that trade on an invite-only app used by five people.
+
+Auto Minify and Brotli are fine; they do not move script tags.
+
+### Cloudflare refuses the upload before the app sees it
+
+The app accepts models up to **250 MB**. Cloudflare's proxy caps request bodies
+well below that, and the cap is per plan:
+
+| plan | maximum request body |
+| --- | --- |
+| Free | 100 MB |
+| Pro | 100 MB |
+| Business | 200 MB |
+| Enterprise | 500 MB by default |
+
+Over the limit, Cloudflare answers **413** at the edge. The request never
+reaches the tunnel, so the app logs nothing — the same silent shape as the
+Nginx `client_max_body_size` problem above, one hop further out.
+
+This is **not** something the tunnel introduces: it applies to any
+orange-clouded hostname, so a deployment already proxied by Cloudflare has the
+cap today. There is no setting below Enterprise that raises it. On a Free plan
+the effective ceiling is 100 MB, not 250 MB, and `MAX_REQUEST_BYTES` cannot
+change that — so either say 100 MB to the people uploading, or move the upload
+path off the proxied hostname.
+
+### How it fails, and where to look
+
+A tunnel fails differently from a port forward, which is worth knowing before
+you are reading an error at speed:
+
+| symptom | meaning |
+| --- | --- |
+| **error 1033** | Cloudflare has the hostname but no healthy connector — `cloudflared` is down, cannot find the edge (below), or the token is wrong |
+| **502** | the connector is up but cannot reach `ppp-app:3000` — wrong service URL, or the app is unhealthy |
+| **413** | the upload cap above |
+| **522** | should stop happening; it means something is still resolving to an origin IP |
+
+`docker logs ppp-cloudflared` and the tunnel's own health in the Zero Trust
+dashboard are the checks. The dashboard is the authoritative one, because it
+knows whether the edge can see the connector — which nothing on the host can.
+
+#### 1033 with a connector that restarts every minute: it is DNS
+
+The connector does not have Cloudflare's addresses built in. It finds the edge
+by looking up an SRV record, `_v2-origintunneld._tcp.argotunnel.com`, through
+Docker's embedded resolver — which forwards to the host's nameservers **in
+order**. If that lookup keeps failing, `cloudflared` retries for about a
+minute, exits, and `restart: unless-stopped` starts it again, forever. The
+dashboard shows the tunnel *Down* with no active replicas; the app is healthy
+throughout.
+
+This is what took the reference deployment down. The host's first nameserver
+— a Pi-hole on the LAN — was accepting connections on port 53 but answering
+nothing, and the second one was unreachable from that line. The host itself still resolved names, slowly, by falling through to the
+third; the connector's lookup timed out before Docker got that far. So every
+check made *from the host* looked fine, which is exactly why it is worth
+knowing:
+
+- the connector process keeps a fresh start time (`ps -eo pid,lstart,args |
+  grep cloudflared`) while the app's does not;
+- it never opens a connection to port **7844**, the edge's — only DNS queries;
+- asking each of the host's nameservers directly shows which one is dead:
+
+```bash
+grep nameserver /etc/resolv.conf
+dig SRV _v2-origintunneld._tcp.argotunnel.com @<nameserver>   # each in turn
+```
+
+Fix the dead resolver, or move a working one to the front of the host's list;
+the next restart picks it up with no change to the stack. A token problem looks
+different in `docker logs ppp-cloudflared` — the edge is reached and refuses
+it — so read the log before rotating a token that was never the problem.
+
+The connector image is distroless and has neither a shell nor `curl`, so it
+carries no compose healthcheck; there is nothing in it to run one with.
+
+`scripts/deploy-wizard.sh` needs no change. It polls the public health URL,
+which is still `https://<your hostname>/api/health`, and rolls back on the same
+signal as before.

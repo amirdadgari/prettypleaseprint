@@ -214,7 +214,35 @@ async function main() {
   probe("A01-audit-leak", "no audit rows leak to a client",
         !auditLeak.includes("auth.signed_in") && !auditLeak.includes("invite.sent"));
 
-  // The admin plugin ships privileged endpoints. A client must not reach them.
+  /*
+   * The admin plugin ships a dozen privileged endpoints, and this app uses none
+   * of them: every admin screen goes through Prisma directly, and
+   * `authClient.admin` is never called from the browser. They are 404ed as a
+   * prefix in src/middleware.ts.
+   *
+   * Asserted for an admin as well as a client, because the client case was
+   * never the interesting one. The re-auth gate in src/lib/reauth.ts exists
+   * because four actions outlive a session, and its stated value is that "the
+   * thief has the session, not the passkey" — but a copied admin cookie inside
+   * its twenty idle minutes could reach the same ends through these endpoints
+   * without meeting that bar, unaudited, and they are listed at
+   * /api/openapi.json for any signed-in client to read. set-user-password sets
+   * a colleague's password without revoking their sessions; impersonate-user
+   * mints a session as anybody; set-role is persistence that survives the real
+   * admin changing their password.
+   *
+   * 404 rather than 401 or 403 — and note this probe previously accepted those.
+   * It had to change with the fix, which is the honest signal that the behaviour
+   * changed: as far as any caller is concerned these paths do not exist, and a
+   * 403 would confirm that they do.
+   */
+  /*
+   * Its own admin session rather than the `apiAdmin` created later in this file,
+   * only because that one does not exist yet at this point in the suite. An
+   * extra session is harmless — nothing here counts the admin's.
+   */
+  const ownerNow = await signIn(admin);
+
   for (const [name, path, body] of [
     ["list-users", "/api/auth/admin/list-users", null],
     ["set-role", "/api/auth/admin/set-role", { userId: "self", role: "admin" }],
@@ -222,15 +250,32 @@ async function main() {
       { email: "backdoor@nowhere.test", password: "x", name: "B", role: "admin" }],
     ["impersonate-user", "/api/auth/admin/impersonate-user", { userId: "x" }],
     ["remove-user", "/api/auth/admin/remove-user", { userId: "x" }],
+    ["set-user-password", "/api/auth/admin/set-user-password",
+      { userId: "x", newPassword: "not-the-real-one-1234" }],
+    ["ban-user", "/api/auth/admin/ban-user", { userId: "x" }],
+    ["update-user", "/api/auth/admin/update-user", { userId: "x", data: { role: "admin" } }],
     ["list-sessions", "/api/auth/admin/list-user-sessions", { userId: "x" }],
+    ["revoke-sessions", "/api/auth/admin/revoke-user-sessions", { userId: "x" }],
   ] as const) {
-    const res = body
-      ? await client.json(path, { ...body, userId: body.userId === "self" ? ayla.id : ayla.id })
-      : await client.raw(APP + path, { headers: client.headers() });
-    probe(`A01-${name}`, `admin API "${name}" refuses a client`,
-          res.status === 401 || res.status === 403,
-          `expected 401/403, got ${res.status}: ${(await res.text()).slice(0, 90)}`);
+    for (const [who, browser] of [["client", client], ["admin", ownerNow]] as const) {
+      const res = body
+        ? await browser.json(path, { ...body, userId: ayla.id })
+        : await browser.raw(APP + path, { headers: browser.headers() });
+      probe(`A01-${name}-${who}`, `admin API "${name}" does not exist for ${who === "admin" ? "an admin" : "a client"}`,
+            res.status === 404,
+            `expected 404, got ${res.status}: ${(await res.text()).slice(0, 90)}`);
+    }
   }
+
+  // And the app's own path still works, or the fix traded one problem for
+  // another. Suspension is the closest equivalent to ban-user, and it is
+  // exercised in full by verify:queue; here it is enough that the admin screen
+  // the owner actually uses still renders its controls.
+  const memberScreen = await (await ownerNow.go(`${APP}/admin/invites`)).text();
+  probe("A01-admin-ui-intact", "the owner's own member controls still render",
+        memberScreen.includes("Revoke access") || memberScreen.includes("Restore access") ||
+          memberScreen.includes("Suspend"),
+        memberScreen.slice(0, 160));
 
   const escalated = await db.user.findUnique({ where: { id: ayla.id } });
   probe("A01-role", "client role unchanged after escalation attempts",
@@ -244,7 +289,7 @@ async function main() {
     data: {
       title: "Ayla's private hook", uploaderId: ayla.id, colorName: "Slate",
       colorHex: "#4a5d78", tip: "A beer", filename: "a.stl", fileSize: 1,
-      mimeType: "model/stl", storageKey: "k1",
+      mimeType: "model/stl", storageKey: "secret-key-a1",
     },
   });
   // Imported from scope.ts, not authz.ts: the pure rule, no "server-only".
@@ -463,8 +508,17 @@ async function main() {
   // database row and the object key is public. src/lib/api.ts names every
   // field it emits for exactly this reason.
   const own = await (await client.raw(`${APP}/api/stories/${aylaStory.id}`)).text();
+  /*
+   * The fixture's key is a distinctive string, not "k1" as it was, because the
+   * assertion is a substring search over the whole response body and
+   * `uploader.id` is a cuid — 25 lowercase alphanumerics. Two characters
+   * collide with one roughly 1.8% of the time, so this probe failed about one
+   * run in fifty, for years, on a body that never contained the key at all. A
+   * gate that reddens at random is a gate people learn to re-run. Its sibling
+   * below already had this right with `secret-key-m1`.
+   */
   probe("A02-api-key", "the object's storage key is not on the wire",
-        !own.includes("storageKey") && !own.includes("k1"), own.slice(0, 200));
+        !own.includes("storageKey") && !own.includes("secret-key-a1"), own.slice(0, 200));
   probe("A02-api-email", "and neither is anybody's e-mail address",
         !own.includes("@office.example") && !own.includes(admin.email), own.slice(0, 200));
 

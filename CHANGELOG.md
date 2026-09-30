@@ -15,6 +15,27 @@ Notable changes. Every entry names a released version; deployments pin
   old tickets retain label, representative colour, rendered swatch, and mode
   snapshots when catalogue entries later change. `npm run verify:catalog`
   covers the owner-only forms, ordering, validation, and snapshot contract.
+
+- **Rocket Loader has to be off, and the docs now say so.** Reported by NelsonFx
+  on the pull request that added the tunnel overlay, and it is the first thing an
+  orange-clouded deployment hits. Cloudflare's Rocket Loader rewrites every
+  `<script>` to load through its own deferred loader, and the rewritten tags do
+  not carry the per-request nonce that `script-src 'self' 'nonce-…'
+  'strict-dynamic'` requires — so hydration never happens and no client-side code
+  runs at all.
+
+  The failure is quieter than an error: every page renders from server HTML and
+  looks right, and simply does nothing. Sign-in is where it shows first, because
+  `/signin` is a client component and both the passkey and password paths go
+  through the auth client, but it takes the upload progress bar, the viewer and
+  the Activity menu with it. CSP violations appear in the browser console and
+  nothing appears in the app's logs, because the requests never arrive.
+
+  There is no way to keep both: the alternative is `unsafe-inline`, which throws
+  away what the nonce is for. Documented in the README's troubleshooting list and
+  in the Cloudflare section of [deployment](docs/deployment.md), with Auto Minify
+  and Brotli noted as safe.
+
 - **`npm run migrate:storage` — copy every model out of MinIO, and prove the
   copy is complete.** The first step of removing the object store, and it
   changes nothing about how the app runs: the app keeps reading from MinIO, and
@@ -72,6 +93,30 @@ Notable changes. Every entry names a released version; deployments pin
 
   Pure aggregation: no new column, nothing recorded for it, and no charting
   library — a CDN would be refused by `script-src 'self'` and it is four bars.
+
+- **A Cloudflare Tunnel overlay, for a deployment whose public address is not
+  its own to keep.** `docker-compose.tunnel.yml` runs a `cloudflared` connector
+  beside the app, and is used *instead of* `docker-compose.proxy.yml`. The
+  origin dials outward, so there is no port to forward, no `A` record to keep
+  current, and an address the ISP can take back stops being able to take the
+  site down. That is the failure it was written for: a DSL-to-cable migration
+  handed the old address back, the record went on pointing at an IP that no
+  longer routed, and Cloudflare answered 522 while the app stayed healthy, its
+  certificate valid and its own logs entirely quiet — because from the app's
+  side nothing was wrong.
+
+  It publishes no host port, which is the condition that keeps
+  `TRUST_PROXY_HEADERS=cloudflare` honest rather than merely set, and it
+  deliberately declares no `environment:` of its own: a service-level value
+  beats `env_file:`, so an overlay that hard-codes one overrules `.env.docker`
+  in silence. That is the trap `docker-compose.proxy.yml` already carries a
+  paragraph about, and repeating it here would have been the same bug twice.
+
+  Documented beside the Nginx Proxy Manager route, along with the limit
+  Cloudflare imposes either way: its request-body cap is 100 MB on Free and
+  Pro against this app's own 250 MB, and over it the edge answers 413 before
+  the app is reached at all. Any orange-clouded deployment already has that
+  ceiling, tunnel or not.
 
 - **Models up to 250 MB, from 50 MB.** Real work went past the old cap —
   multi-object plates and scanned meshes — and the app's answer was "decimate
@@ -298,6 +343,64 @@ Notable changes. Every entry names a released version; deployments pin
 
 ### Changed
 
+- **The documentation caught up with the code.** A sweep after the object store
+  came out, because several documents were describing a stack that no longer
+  exists rather than being wrong in small ways.
+
+  `docs/architecture.md` gained a **Storage is a directory** section — it is the
+  design document and had nothing to say about the largest structural change in
+  the project, while still describing `storage.ts` as "S3/MinIO, signed URLs".
+  The viewer's byte-path reasoning, the upload ordering, the wire-format note and
+  the file layout all now describe files rather than objects.
+
+  `docs/development.md`'s stack table and dev-compose line still promised MinIO
+  on `:9000`, and its reason for preferring `docker compose` over GitHub
+  `services:` was half about MinIO needing a command override — which left with
+  the object store, so the sentence now keeps the reason that survived and notes
+  which one did not. `release-images.yml` also publishes a third image now.
+
+  Counts that had drifted: **nine** suites, not eight, in both the README and
+  CONTRIBUTING — and CONTRIBUTING's claim that all of them run against the built
+  image was never quite true, since `verify:models` is a pure-function test in its
+  own gate. `probe:security` is **120** probes, not 103; `verify:models` is 32
+  checks, not 29; `verify` runs eight integration suites, not five; and `guard`
+  runs three cheap gates, not two.
+
+
+- **The object store is gone. Model files are files.** MinIO served an S3 API
+  that this app never needed: every byte was already proxied through
+  `/api/models/[id]` — the deployment publishes no port for storage, so a
+  signed URL would have pointed at something the browser cannot reach — and
+  the whole surface was six calls. Head and create a bucket, put, get, delete,
+  copy. Those are `stat`, `mkdir`, a write, a read, `unlink` and `copyFile`.
+
+  What it cost in exchange was a container, a credential pair, a healthcheck,
+  two AWS SDK packages, and finally a supply-chain problem: MinIO withdrew its
+  community images *and* binaries, so the project ended up mirroring one and
+  then compiling its own, which still carried 63 HIGH/CRITICAL advisories no
+  upgrade fixes. For five people and one printer, putting a few hundred
+  megabytes of STL onto a disk the app already has mounted, that was a great
+  deal of machinery to keep alive.
+
+  Files land in `$DATA_ROOT/uploads`, mode 644 under 755 directories —
+  deliberately readable, so a backup needs no root. Postgres' data directory
+  being mode 700 is why the README carries a paragraph about backing up from
+  inside a container; one such trap is enough, and models are not secret at
+  rest, they are gated at the route. Writes are atomic (temp file, `fsync`,
+  rename, `fsync` the directory), because S3 gave that away for free and the
+  database row created straight afterwards claims the file is whole.
+
+  **Upgrading needs the migration first** — `npm run migrate:storage`, see
+  [deployment](docs/deployment.md). The bytes cannot be copied with `cp`: MinIO
+  inlines most objects into their metadata. Nothing here deletes anything, and
+  the old directory stays until you remove it yourself.
+
+  The `verify:upload` assertions that read storage from outside the app moved
+  with it rather than being dropped. They are the ones that would notice if
+  `putModel` or `copyModel` quietly stopped writing, and they caught a path
+  mistake during this very change.
+
+
 - **The Requirements table promised a Pi 5, and never delivered one.** It listed
   "a NAS, a Pi 5, a VPS, a spare laptop" as hosts. A Pi 5 is arm64, and
   `ppp-app` and `ppp-migrate` have only ever been published for `linux/amd64` —
@@ -426,7 +529,74 @@ Notable changes. Every entry names a released version; deployments pin
   deployed has to change. Renaming them would break every pinned `PPP_TAG`
   and orphan `v0.1.0` in exchange for tidiness.
 
+### Removed
+
+- **The MinIO furniture, all of it.** `docker/minio/Dockerfile`,
+  `.github/workflows/minio-image.yml`, and the dead `S3_ACCESS_KEY` allowance in
+  the secret scanner. Nothing builds, publishes, signs or scans an object-store
+  image any more, because nothing runs one — which also takes the permanently
+  red `MinIO image` run off `main`.
+
+  What that thread cost, for the record: a mirror after Docker Hub started
+  answering 404, a digest pin, a tag collision that made the pin's two halves
+  name different images, a multi-architecture build from AGPL source, a uid-1000
+  migration, a Trivy exception that was argued for and then not taken, and 63
+  HIGH/CRITICAL advisories that no upgrade could fix because upstream's newest
+  release shipped byte-identical vulnerable dependencies. None of it survives
+  not having an object store.
+
+  **Deliberately kept:** `scripts/export-storage.ts`,
+  `docker-compose.storage-migration.yml` and their documentation. Anyone
+  upgrading from a release that had MinIO still needs to get their models out,
+  and that cannot happen if the tooling left in the same change. The overlay
+  pins the mirror image by digest, so the `ghcr.io/danileau/minio` package has
+  to stay published too — both go a release or two from now, once nobody
+  plausibly has a MinIO data directory left.
+
 ### Fixed
+
+- **The board and the header at phone width.** A card title long enough to wrap
+  overflowed its card on `/board`, and the shared header did not fit a narrow
+  viewport. Shipped in August and never written down here — found while checking
+  the changelog covered every commit since v0.1.0, which it now does. Reproduced
+  in a headless browser at 360, 390, 430, 768 and 1180 for both roles, before and
+  after.
+
+
+- **Seven places where the documentation would have walked a stranger into a
+  wall.** Found by reviewing the repo against itself rather than reading it.
+
+  - **`scripts/deploy-wizard.sh` health-checked this project's own deployment
+    by default.** `PPP_HEALTH_URL` defaulted to `https://ppp.danileau.com/api/health`,
+    and neither that variable nor `deploy.conf` appears in any `.md` or
+    `.example` file — so somebody else's run printed *our* host as "Live health:
+    healthy", gated its post-swap health loop on it, and could roll back a
+    perfectly good deploy because an unrelated machine blipped. It now derives
+    from `APP_URL` in the same `.env.docker` it already reads the tag from, and
+    refuses to guess if neither that nor `PPP_HEALTH_URL` is set. This is the
+    only script in the repo that changes production.
+  - **The documented bootstrap command errored out as written.** Both
+    `.env.docker.example` and a comment in `docker-compose.prod.yml` gave
+    `docker compose -f docker-compose.prod.yml logs migrate` without
+    `--env-file`, which dies on `required variable DB_PASSWORD is missing`. That
+    is the command that prints the one-use admin link — the single thing a fresh
+    deployment cannot proceed without.
+  - **Quick start handed you a stack you could not sign into.** It said to set
+    `APP_URL` and `PASSKEY_RP_ID` to a public hostname, then to raise the
+    build-and-test stack on `http://localhost:3000`. Better Auth derives its
+    trusted origin and cookie prefix from those, so the browser sent an untrusted
+    origin and threw away a `__Secure-` cookie over plain HTTP. It now says to
+    leave the localhost values until you deploy, and why.
+  - **`PPP_TAG` and `PPP_REGISTRY` were undocumented in the file every user
+    copies**, while the wizard refuses to run without the first and the README
+    calls that file "the full file with commentary".
+  - **Two compose files that have not existed since #18** were still cited in
+    `.env.docker.example` (in the guidance for when `TRUST_PROXY_HEADERS` is
+    safe) and in a source comment. `check:links` cannot catch these: it reads
+    markdown only.
+  - **Three `S3_*` rows and one `S3_SECRET_KEY` in Quick start** outlived the
+    object store by a change, describing variables nothing reads.
+
 
 - **Every build depended on Google answering, and the failure did not say so.**
   The four faces came from `next/font/google`, which downloads them at build

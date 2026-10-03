@@ -2,7 +2,7 @@ import "server-only";
 import { z } from "zod";
 
 import { auth } from "@/lib/auth";
-import { TIPS, WishSchema } from "@/lib/catalog";
+import { COLOR_MODES, TIPS, WishSchema } from "@/lib/catalog";
 import { ACCEPTED_EXTENSIONS, MAX_BYTES, formatBytes } from "@/lib/models";
 import { FLOW } from "@/lib/scope";
 import { BodySchema, LIST_LIMIT_DEFAULT, LIST_LIMIT_MAX, ReasonSchema } from "@/lib/stories";
@@ -104,7 +104,17 @@ const STORY_SCHEMA = {
           type: "string",
           description: "The owner-managed colour label, snapshotted when the request was made.",
         },
-        hex: { type: "string", examples: ["#4a5d78"] },
+        hex: {
+          type: "string",
+          examples: ["#4a5d78"],
+          description: "One representative colour — what the 3D viewer paints the model with.",
+        },
+        style: {
+          type: "string",
+          examples: ["#4a5d78", "linear-gradient(135deg, #e4322f, #f6c945)"],
+          description: "The swatch as a CSS background: a colour or a linear-gradient.",
+        },
+        mode: { type: "string", enum: [...COLOR_MODES] },
       },
     },
     tip: { type: "string", enum: [...TIPS] },
@@ -610,6 +620,40 @@ export async function buildOpenApiDocument() {
         },
       },
 
+      "/api/stories/{id}/requeue": {
+        post: {
+          tags: ["stories"],
+          summary: "Print one of your tickets again",
+          description:
+            "Opens a fresh `Requested` ticket from the same file — nothing is " +
+            "uploaded. The body is the wish and **every field is optional**: " +
+            "what is left out is carried over from the old ticket, so `{}` " +
+            "repeats it exactly. What is sent is held to the rules an upload " +
+            "is — the material and colour must be in `GET /api/catalog` today, " +
+            "and the tip must be a benefit on offer. The old ticket is not changed.",
+          parameters: [storyIdParam],
+          requestBody: {
+            required: false,
+            content: {
+              "application/json": {
+                schema: { $ref: "#/components/schemas/Wish" },
+                example: { quantity: 4, material: "PETG", colorName: "Slate", printSettings: "40% infill" },
+              },
+            },
+          },
+          responses: {
+            "201": storyResponse("The new ticket.", {
+              from: { type: "string", examples: ["PPP-104"] },
+            }),
+            "400": errorResponse("A field did not parse."),
+            "403": errorResponse("Only the person who asked for it can print it again."),
+            "404": errorResponse("No such ticket, or not one you may see."),
+            "409": errorResponse("The material, colour or benefit is not on offer any more."),
+            ...COMMON_ERRORS,
+          },
+        },
+      },
+
       "/api/stories/{id}/comments": {
         get: {
           tags: ["conversation"],
@@ -662,6 +706,54 @@ export async function buildOpenApiDocument() {
             },
             "400": errorResponse("Empty, or longer than a comment wants to be."),
             "404": errorResponse("No such ticket, or not one you may see."),
+            ...COMMON_ERRORS,
+          },
+        },
+      },
+
+      "/api/catalog": {
+        get: {
+          tags: ["stories"],
+          summary: "What can be asked for right now",
+          description:
+            "The materials on the shelf and the colours each comes in, in the " +
+            "printer owner's order. `POST /api/upload` accepts exactly these " +
+            "pairs and checks again when the upload arrives, so a pair that was " +
+            "retired in between is refused with 400. Retired entries are not listed.",
+          responses: {
+            "200": {
+              description: "Only materials that have at least one colour on offer.",
+              content: {
+                "application/json": {
+                  schema: {
+                    type: "object",
+                    properties: {
+                      materials: {
+                        type: "array",
+                        items: {
+                          type: "object",
+                          properties: {
+                            name: { type: "string", examples: ["PETG"] },
+                            colors: {
+                              type: "array",
+                              items: {
+                                type: "object",
+                                properties: {
+                                  name: { type: "string", examples: ["Slate"] },
+                                  hex: { type: "string", examples: ["#4a5d78"] },
+                                  style: { type: "string", examples: ["#4a5d78"] },
+                                  mode: { type: "string", enum: [...COLOR_MODES] },
+                                },
+                              },
+                            },
+                          },
+                        },
+                      },
+                    },
+                  },
+                },
+              },
+            },
             ...COMMON_ERRORS,
           },
         },

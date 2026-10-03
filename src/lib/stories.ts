@@ -17,6 +17,9 @@ import {
 } from "@/lib/scope";
 import { copyModel, deleteModel, storageKeyFor } from "@/lib/storage";
 import { extensionOf } from "@/lib/models";
+import { availableSelection } from "@/lib/catalog-data";
+import { WishSchema } from "@/lib/catalog";
+import { activeBenefitLabels } from "@/lib/benefits";
 
 /**
  * Everything that can happen to a ticket, in one place.
@@ -130,6 +133,8 @@ export const STORY_FIELDS = {
   material: true,
   colorName: true,
   colorHex: true,
+  colorStyle: true,
+  colorMode: true,
   tip: true,
   note: true,
   filename: true,
@@ -172,6 +177,8 @@ const HISTORY_FIELDS = {
   status: true,
   material: true,
   colorHex: true,
+  colorStyle: true,
+  colorMode: true,
   filename: true,
   tip: true,
   flagged: true,
@@ -558,8 +565,11 @@ export async function withdrawStory(actor: Actor, id: number) {
  * A first print is often a test; when it works, or needs another go, hunting
  * down the model file to re-upload it is friction the app can remove. This
  * opens a brand-new `Requested` ticket from any of the requester's own past
- * tickets — a finished one, a declined one, anything — copying every wish
- * field across.
+ * tickets — a finished one, a declined one, anything — carrying the wish
+ * across, with whatever the requester changed on the way: `changes` may name
+ * any wish field (title, material, colorName, quantity, tip, note,
+ * printSettings) and the rest are taken from the old ticket. The file is the
+ * one thing that cannot change; a different model is a different request.
  *
  * The file is *copied*, not shared: a fresh object under a generated key, so
  * the new ticket and the old one own independent geometry and withdrawing
@@ -567,12 +577,16 @@ export async function withdrawStory(actor: Actor, id: number) {
  * original may re-queue it — being able to see a ticket (an admin sees all) is
  * not being the person whose request it is to repeat.
  */
-export async function requeueStory(actor: Actor, id: number) {
+export async function requeueStory(
+  actor: Actor,
+  id: number,
+  changes: Record<string, unknown> = {},
+) {
   const src = await db.story.findFirst({
     where: { AND: [{ id }, storyScope(actor)] },
     select: {
       id: true, title: true, quantity: true, material: true, colorName: true,
-      colorHex: true, tip: true, note: true, printSettings: true,
+      tip: true, note: true, printSettings: true,
       filename: true, fileSize: true,
       mimeType: true, storageKey: true, dims: true, uploaderId: true,
     },
@@ -580,6 +594,49 @@ export async function requeueStory(actor: Actor, id: number) {
   if (!src) throw problem(404, "That ticket no longer exists.");
   if (src.uploaderId !== actor.id) {
     throw problem(403, "Only the person who asked for it can print it again.");
+  }
+
+  // The second go is rarely the first one repeated: the test print came out
+  // too weak, or in the wrong colour, or one was not enough. So the wish can
+  // be changed on the way through — anything not named in `changes` is carried
+  // over from the old ticket — and only the file is fixed. The merged wish
+  // goes through the same schema an upload does, so a changed field is held
+  // to exactly the rules a fresh request would be.
+  const pick = (key: keyof typeof src & string) =>
+    changes[key] === undefined ? src[key] : changes[key];
+  const parsed = WishSchema.safeParse({
+    title: pick("title"),
+    material: pick("material"),
+    colorName: pick("colorName"),
+    quantity: pick("quantity"),
+    tip: pick("tip"),
+    note: pick("note"),
+    printSettings: pick("printSettings"),
+  });
+  if (!parsed.success) {
+    throw problem(400, parsed.error.issues[0]?.message ?? "Check the form.");
+  }
+  const wish = parsed.data;
+
+  // A re-queue is a new request, so it answers to the shelf as it is today —
+  // the same lookup the upload makes. Without it this was the one way to ask
+  // for a material or colour the owner had taken off, and the copy would have
+  // carried the old ticket's swatch rather than what is actually on offer.
+  // The old ticket itself is untouched either way.
+  const selection = await availableSelection(wish.material, wish.colorName);
+  if (!selection) {
+    throw problem(
+      409,
+      `${wish.material} in ${wish.colorName} is not on the shelf any more — ` +
+        `pick from what is.`,
+    );
+  }
+
+  // And to the benefits as they are today, for the same reason and with the
+  // same escape the upload has: no active benefits at all refuses nobody.
+  const allowedTips = await activeBenefitLabels();
+  if (allowedTips.length > 0 && !allowedTips.includes(wish.tip)) {
+    throw problem(409, `“${wish.tip}” is not a benefit on offer any more — pick one from the list.`);
   }
 
   // Copy the object first, so a failure here opens no ticket that points at
@@ -594,16 +651,18 @@ export async function requeueStory(actor: Actor, id: number) {
 
   const created = await db.story.create({
     data: {
-      title: src.title,
+      title: wish.title || src.title,
       uploaderId: actor.id,
       status: "Requested",
-      quantity: src.quantity,
-      material: src.material,
-      colorName: src.colorName,
-      colorHex: src.colorHex,
-      tip: src.tip,
-      note: src.note,
-      printSettings: src.printSettings,
+      quantity: wish.quantity,
+      material: wish.material,
+      colorName: wish.colorName,
+      colorHex: selection.hex,
+      colorStyle: selection.style,
+      colorMode: selection.mode,
+      tip: wish.tip,
+      note: wish.note,
+      printSettings: wish.printSettings,
       filename: src.filename,
       fileSize: src.fileSize,
       mimeType: src.mimeType,
@@ -613,12 +672,19 @@ export async function requeueStory(actor: Actor, id: number) {
     select: { id: true },
   });
 
+  const title = wish.title || src.title;
+  // Which fields differ from the old ticket — names only, for the trail. The
+  // values are on the two tickets, and a note is not something to copy into
+  // a log.
+  const changed = (["title", "material", "colorName", "quantity", "tip", "note", "printSettings"] as const)
+    .filter((key) => (key === "title" ? title : wish[key]) !== src[key]);
+
   const owner = await printerOwner();
   if (owner && owner.id !== actor.id) {
     await notify({
       recipientId: owner.id,
       storyId: created.id,
-      text: `${actor.name} re-queued “${src.title}”.`,
+      text: `${actor.name} re-queued “${title}”.`,
     });
   }
 
@@ -626,14 +692,14 @@ export async function requeueStory(actor: Actor, id: number) {
     action: "story.requeued",
     actor,
     subject: storyRef(created.id),
-    detail: { title: src.title, from: storyRef(src.id) },
+    detail: { title, from: storyRef(src.id), changed },
   });
 
   refresh(created.id);
   return {
     id: created.id,
     ref: storyRef(created.id),
-    title: src.title,
+    title,
     fromRef: storyRef(src.id),
   };
 }

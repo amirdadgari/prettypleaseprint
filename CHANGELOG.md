@@ -16,6 +16,31 @@ Notable changes. Every entry names a released version; deployments pin
   snapshots when catalogue entries later change. `npm run verify:catalog`
   covers the owner-only forms, ordering, validation, and snapshot contract.
 
+  Five things were put right in review, each of them found by running it
+  against a database that already had tickets rather than a fresh one:
+
+  - **A rollback could not file a request.** The migration dropped the
+    `Material` enum, which the previous image's client still casts every insert
+    to. Rolled back onto the migrated database, every page rendered and every
+    upload answered 500. A follow-up migration puts the type back, unused.
+  - **The colour band on every board card had vanished**, and "whatever"
+    tickets showed a clipped question mark in the corner instead. The swatch
+    component and its caller disagreed about `display`.
+  - **Printing a ticket again lost its swatch and ignored the shelf.** The copy
+    came back solid, and it worked for a colour the owner had just retired
+    while a fresh upload of the same colour was refused. A re-queue now makes
+    the same catalogue lookup an upload does.
+  - **Old "Whatever's on" tickets had been repainted** from grey to purple in
+    the viewer and the audit tally. Their representative colour is back to
+    what they were filed with; the rainbow stays in the swatch.
+  - **The catalogue page ran off the side of a phone**, and `/history` drew
+    gradients as flat dots.
+
+  `GET /api/catalog` is new: once the choices stopped being a fixed list the
+  OpenAPI document could no longer enumerate them, and reading the upload
+  page's HTML was the only way for an API client to learn a valid pair. A
+  ticket's `color` now carries `style` and `mode` beside `hex`.
+
 - **Rocket Loader has to be off, and the docs now say so.** Reported by NelsonFx
   on the pull request that added the tunnel overlay, and it is the first thing an
   orange-clouded deployment hits. Cloudflare's Rocket Loader rewrites every
@@ -343,6 +368,33 @@ Notable changes. Every entry names a released version; deployments pin
 
 ### Changed
 
+- **Printing a ticket again opens the request form, so the second go can be
+  different.** "Print again" used to be one click that cloned the old ticket
+  exactly. But a second print is rarely the first one repeated — the test came
+  out too weak, or the wrong colour, or one was not enough — so the requester
+  filed a ticket they already knew was wrong and explained the difference in a
+  comment. It now leads to `/story/{id}/again`: the request form without the
+  dropzone, filled in with the old wish. Title, material, colour, quantity,
+  benefit, note and print settings can all be changed; the file cannot, because
+  a different model is a different request. Nothing is created until the form
+  is sent, and the old ticket is never touched.
+
+  A choice that has left the shelf since — a retired material, colour or
+  benefit — is replaced by the default and **said out loud** above the form,
+  rather than silently swapped or left to fail on submit.
+
+  Behind it is `POST /api/stories/{id}/requeue`, which the API did not have at
+  all before. The body is the wish with every field optional: `{}` repeats the
+  ticket, `{ "quantity": 4 }` asks for four. The merged wish goes through the
+  same schema, the same catalogue lookup and the same benefit check as an
+  upload. The audit row records *which* fields changed, not what they said.
+  The old server action is gone, so there is one implementation.
+
+  What this costs: the old control was a plain form that worked with
+  JavaScript off. The request form never did, and printing again now shares
+  that. `verify:upload` covers the page, the tuned copy, the refusals and both
+  ownership rules.
+
 - **The documentation caught up with the code.** A sweep after the object store
   came out, because several documents were describing a stack that no longer
   exists rather than being wrong in small ways.
@@ -554,6 +606,94 @@ Notable changes. Every entry names a released version; deployments pin
   plausibly has a MinIO data directory left.
 
 ### Fixed
+
+- **An invited address could be registered without its invite link.** The
+  invite gate checked that a pending invitation existed for the address, and
+  Better Auth's sign-up endpoint answers anybody — so while an invitation was
+  open, whoever knew the address could post it with their own password and be
+  given the account and a session, without the link. It now takes both: a
+  pending invitation, and a request that is redeeming that invitation's link.
+  `acceptInvite` checks the token and marks the sign-up as a redemption; the
+  gate refuses everything else, with the same answer an uninvited address gets.
+
+  Two suites had been proving the hole worked. `verify:auth` and
+  `probe:security` each registered an invited address by posting it straight to
+  the endpoint, as a convenient way to test something else, and passed. Those
+  checks now assert the refusal, and `A04-invitelink` / `A04-inviteoracle` are
+  new. Written up as finding 10 in [the security audit](docs/security-audit.md).
+
+  **If you run a deployment:** an account opened this way is indistinguishable
+  afterwards from one opened with the link. If an invitee ever reported that
+  their link said "already accepted" before they had used it, look at that
+  account.
+
+- **The quantity box could not be cleared.** "Or type a number" coerced every
+  keystroke to a quantity, so emptying it snapped straight back to `1` and
+  typing a 3 gave 13 — the only way to enter a number was to select the digit
+  first. The box now keeps what is being typed apart from the quantity: it can
+  be empty mid-edit, a whole number of one or more takes effect as it is typed,
+  and leaving the box with anything else in it falls back to the last quantity.
+  It mattered little while the box started at 1 on a new request, and more once
+  printing a ticket again opened the form with an old quantity to change.
+
+- **Better Auth 1.7.1 → 1.7.7, and the migration that upgrade needs.** The
+  weekly dependency group had been failing `verify` since 2026-09-27 and looked,
+  from the first failing check, like a broken invite gate: sign-up with no
+  pending invitation answered 500 instead of 403. The gate was fine. Better Auth
+  1.7.0–1.7.2 required an `account.issuer` column, and this app added it as
+  `NOT NULL` when it gained passwords; 1.7.3 withdrew the requirement, stopped
+  writing the column, and went back to recognising an account by
+  `(providerId, accountId)`. Against a required column that makes every insert
+  into `account` fail — nobody can be given a password — and the library now
+  checks for exactly that and refuses each request with *"Prisma schema
+  mismatch"*.
+
+  The migration makes `issuer` nullable and moves the unique index back to
+  `(providerId, accountId)`, where it was before. It does **not** drop the
+  column, and that is deliberate: the deploy wizard rolls back to the previous
+  image when a deploy fails its health check, and that image's client still
+  selects `issuer`. Dropping it would turn a failed deploy into a rollback that
+  cannot read an account.
+
+  That claim was tested rather than reasoned, on one database carried across
+  both images. Accounts made under 1.7.1 sign in under 1.7.7. After rolling back
+  onto the migrated database the old migrator finds nothing to do and does not
+  object to a migration it has never heard of, existing accounts sign in, and
+  new ones can be created. The one thing a rollback does not get for free is
+  written into the migration: a password *first set* under 1.7.7 has a NULL
+  issuer, and 1.7.1 answers that account 401 until
+  `UPDATE "account" SET "issuer" = 'local:' || "providerId" WHERE "issuer" IS NULL`
+  is run — which was also tried, and fixes it.
+
+  1.7.7 rather than the 1.7.6 the group proposed, because `@better-auth/passkey`
+  1.7.6 resolves `@better-auth/core` to 1.7.7 while `better-auth` 1.7.6 pins its
+  own 1.7.6, leaving two copies of the core in one process. 1.7.7 also carries a
+  critical fix (GHSA-965c-763c-88jm) for the Magic Link plugin, which this app
+  does not use.
+
+  The rest of the group rides along, none of it needing a code change: `next`
+  15.5.25 → 15.5.26, `react` and `react-dom` 19.0.8 → 19.3.0, `zod` 4.4.3 →
+  4.6.5, `resend` 6.22.0 → 6.29.0, `three` to 0.186, and the development-only
+  `@aws-sdk/client-s3`, `puppeteer-core`, `swagger-ui-dist`, `tsx` and type
+  packages.
+
+- **Two high advisories in `nodemailer`, found by the daily scan.** 9.1.1 →
+  10.0.14, for GHSA-prgh-xp8r-p3m5 and GHSA-v53p-9fqp-m79j: both are quadratic
+  time in the address parser, a denial of service by a crafted address. The
+  scheduled `Security scan` had been red since 2026-09-30, in the repository and
+  in the published `ppp-app` image, and the `trivy` gate would have failed every
+  pull request opened after it.
+
+  The exposure here was small and the bump is not: the only addresses that reach
+  the parser are `MAIL_FROM` and an invitation or reset recipient — typed by the
+  owner, and validated when the invitation was made. But 10 is a major
+  version. It needs Node 20 (the images run 22), and the package was rewritten in
+  TypeScript and now ships from `dist/` with separate ES-module and CommonJS
+  builds — which matters because `nodemailer` is one of the two
+  `serverExternalPackages`, traced into the standalone output rather than
+  bundled. A typecheck cannot see whether that trace still finds the files, so
+  the evidence is `verify:auth` against the built image: an invitation and a
+  reset link both sent through SMTP and read back out of Mailpit.
 
 - **The board and the header at phone width.** A card title long enough to wrap
   overflowed its card on `/board`, and the shared header did not fit a narrow

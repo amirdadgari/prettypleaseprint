@@ -7,6 +7,7 @@ import { relativeTime } from "@/lib/catalog";
 import { knownMaterialNames } from "@/lib/catalog-data";
 import { AppHeader } from "@/components/app-header";
 import { Kicker, StatusChip } from "@/components/ui";
+import { ColorSwatch } from "@/components/color-swatch";
 import { RequeueStory } from "@/components/requeue-story";
 import type { StoryStatus } from "@prisma/client";
 
@@ -149,10 +150,10 @@ export default async function HistoryPage({
                   i < stories.length - 1 ? "border-b-2 border-dashed border-rule" : ""
                 } ${story.status === "Declined" ? "bg-cream-2" : ""}`}
               >
-                <span
-                  aria-hidden
+                <ColorSwatch
+                  mode={story.colorMode}
+                  style={story.colorStyle ?? story.colorHex}
                   className="h-[40px] w-[40px] flex-none rounded-full border-[3px] border-ink"
-                  style={{ background: story.colorHex }}
                 />
                 <div className="min-w-[180px] flex-[1_1_240px]">
                   <Link
@@ -170,7 +171,7 @@ export default async function HistoryPage({
                 {/* Only the person who filed it may re-queue it — an admin
                     seeing a ticket is not its owner (the action re-checks). */}
                 {story.uploaderId === user.id && (
-                  <RequeueStory storyId={story.id} label={storyRef(story.id)} from="/history" compact />
+                  <RequeueStory storyId={story.id} label={storyRef(story.id)} compact />
                 )}
               </div>
             ))

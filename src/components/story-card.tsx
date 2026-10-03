@@ -39,7 +39,8 @@ export function StoryCard({
       <ColorSwatch
         mode={story.colorMode}
         style={story.colorStyle ?? story.colorHex}
-        className="block h-[8px] rounded-t-[7px] border-b-[3px] border-ink"
+        stripe
+        className="h-[8px] rounded-t-[7px] border-b-[3px] border-ink"
       />
 
       <div className={compact ? "px-[13.2px] py-[11px]" : "px-[15px] py-[13.2px]"}>
@@ -75,6 +76,7 @@ export function StoryCard({
             <ColorSwatch
               mode={story.colorMode}
               style={story.colorStyle ?? story.colorHex}
+              mark={false}
               className="h-[9px] w-[9px] rounded-full border border-ink"
             />
             {story.material}

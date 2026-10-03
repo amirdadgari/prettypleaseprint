@@ -176,7 +176,13 @@ export function storyResource(story: StoryRow) {
     flagReason: story.flagReason,
     quantity: story.quantity,
     material: story.material,
-    color: { name: story.colorName, hex: story.colorHex },
+    color: {
+      name: story.colorName,
+      hex: story.colorHex,
+      // Tickets filed before swatches had a style carry none; the hex is it.
+      style: story.colorStyle ?? story.colorHex,
+      mode: story.colorMode,
+    },
     tip: story.tip,
     note: story.note,
     file: {

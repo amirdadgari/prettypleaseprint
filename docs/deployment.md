@@ -445,7 +445,8 @@ Everything is under `DATA_ROOT`: `db/` (Postgres) and `uploads/` (the uploaded
 files). A ZFS snapshot of the dataset captures both. `.env.docker` holds the
 secrets and is not in the repo — keep it somewhere you will still have it after
 a rebuild, because losing `BETTER_AUTH_SECRET` invalidates every session and
-losing `DB_PASSWORD` locks you out of the database.
+makes saved notification-provider credentials unreadable (reconnect them from
+the admin profile); losing `DB_PASSWORD` locks you out of the database.
 
 ## Deploying behind a Cloudflare Tunnel
 

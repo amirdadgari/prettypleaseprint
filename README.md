@@ -57,6 +57,10 @@ that: there is no multi-tenancy, no billing, and no queue theory.
   job.
 - **Talk on the ticket** — a conversation thread per request, so "can you do it
   in teal" lives with the model rather than in a chat app.
+- **Send Activity to Bale** — the printer owner can connect a Bale bot from the
+  Notifications section of their profile. New print requests and other Activity
+  events remain in the app and are also delivered to every active integration;
+  provider failures never discard the in-app notification.
 - **Owner-managed benefits** — the "what's in it for you" tips are the printer
   owner's to define at `/admin/benefits`, and the ones they mark *preferred* are
   starred on the upload form so people know what the owner actually wants. Editing
@@ -159,7 +163,7 @@ with commentary is [`.env.docker.example`](.env.docker.example).
 
 | Variable | Required | What it does |
 | --- | --- | --- |
-| `BETTER_AUTH_SECRET` | **yes** | Signs session cookies. `openssl rand -base64 32`. Losing it invalidates every session. |
+| `BETTER_AUTH_SECRET` | **yes** | Signs session cookies and encrypts notification-provider credentials. `openssl rand -base64 32`. Losing it invalidates every session and requires reconnecting integrations. |
 | `DB_PASSWORD` | **yes** | Postgres password. Baked into the data directory on first start — see [Restore](#restore). |
 | `APP_URL` | **yes** | The origin the browser sees, including scheme. Cookies, invitation links and the WebAuthn relying party derive from it. Must be `https://` in production. |
 | `PASSKEY_RP_ID` | **yes** | Registrable domain, no scheme or port. **Permanent** — changing it kills every enrolled passkey. |
@@ -307,7 +311,8 @@ Nothing is damaged by getting this wrong — the wrong password is refused, not
 destructive. Put the right one back and everything returns. This is the main
 reason `.env.docker` belongs in the backup.
 
-**`BETTER_AUTH_SECRET` is not recoverable, and costs one sign-in.** Restore
+**`BETTER_AUTH_SECRET` is not recoverable, and costs one sign-in plus any
+notification connections.** Restore
 without it and every existing session cookie stops validating — a held cookie
 goes from `200` to a `307` back to the sign-in page. Nobody is locked out:
 passwords and passkeys are untouched, and everyone simply signs in again.
@@ -433,12 +438,13 @@ something, see [SECURITY.md](SECURITY.md).
 
 ## Contributing
 
-Issues and pull requests are welcome. The ten verification suites in
+Issues and pull requests are welcome. The eleven verification suites in
 `scripts/` are the contract — `verify:models`, `verify:auth`, `verify:upload`,
-`verify:queue`, `verify:frr`, `verify:benefits`, `verify:catalog`, `verify:api`,
-`verify:passkey` and `probe:security`. All but `verify:models` run in CI against the built
-container image rather than a dev server. If a change makes one fail, that is the
-change talking.
+`verify:queue`, `verify:frr`, `verify:benefits`, `verify:catalog`,
+`verify:notifications`, `verify:api`, `verify:passkey` and `probe:security`.
+Nine run in CI against the built container image; the model and notification
+provider checks need no server. If a change makes one fail, that is the change
+talking.
 
 See [docs/development.md](docs/development.md) to get set up.
 

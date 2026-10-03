@@ -7,6 +7,14 @@ Notable changes. Every entry names a released version; deployments pin
 
 ### Added
 
+- **External notification integrations.** The printer owner can connect a Bale
+  bot from the Notifications section of their profile. Every in-app Activity
+  notification is still written first, then fanned out to active integrations;
+  an unreachable provider cannot lose the in-app event or fail the print
+  request. Bot tokens are authenticated-encrypted at rest with the existing
+  application secret and are never rendered back to the browser. The provider
+  boundary is deliberately generic so more delivery channels can follow.
+
 - **Materials and colours are owner-managed.** `/admin/catalog` replaces the
   fixed compile-time list with an ordered catalogue. The owner can add, rename,
   temporarily hide, remove, and reorder materials and their colours. Swatches

@@ -348,11 +348,26 @@ side:
   shows on the ticket for the owner. The structured / access-gated "advanced
   mode" is deferred.
 
+## External notification delivery
+
+`notify()` always commits the recipient-scoped `Notification` row first. It
+then fans the same text and an app link out to the recipient's active
+`NotificationIntegration` rows. Delivery is best-effort: network or provider
+failure is recorded on the integration for the owner to see, but never rolls
+back the in-app event or the print operation that produced it.
+
+Provider credentials are encrypted with AES-256-GCM using a key derived from
+`BETTER_AUTH_SECRET`; only ciphertext reaches PostgreSQL and the token is never
+returned to the browser or audit trail. Rotating or losing that application
+secret therefore requires reconnecting integrations. Bale is the first
+adapter. Provider dispatch is centralized in `notification-integrations.ts`,
+so future adapters do not change upload, queue, comment, or feature-request
+code.
+
 ## What is deliberately not built
 
-- **Email/Slack notification delivery.** `Notification` rows and the `notify()`
-  helper exist and the Activity panel reads them; only the in-app record is
-  written so far.
+- **Guaranteed external delivery.** The in-app feed is authoritative. There is
+  no retry queue or claim of exactly-once delivery to a third-party provider.
 - **A designed whole-board empty state.** There is a minimal one that says what
   is true rather than showing a blank page, but the handoff asks for a design
   decision here — treat it as a placeholder.
@@ -389,6 +404,9 @@ src/app/
   catalog-data.ts        live material/colour reads and authoritative lookup
   stories.ts             every operation on a ticket — the rules, once
   notifications.ts       the Activity feed, scoped by recipient
+  notification-integrations.ts encrypted connections + provider fan-out
+  notification-secrets.ts credential encryption
+  bale.ts                 the Bale Bot API adapter
   api.ts                 the JSON boundary: 401/403, Origin, wire format
   openapi.ts             the OpenAPI 3.1 document, app half + Better Auth half
   features.ts            every operation on a feature request — the 'frr' track
@@ -400,6 +418,7 @@ src/app/
   api/upload/            validation, storage, story creation
   api/stories/           the tickets, the flow, the conversation
   api/notifications/     the Activity feed
+  me/                    profile + owner notification integration controls
   api/openapi.json/      the document
   docs/                  the Swagger console (a route, not a page)
   frr/                   the feature-request track: board, new, queue, [id]
@@ -408,6 +427,7 @@ scripts/
   deploy-wizard.sh       pick an image, verify it, deploy, auto-rollback
   vendor-swagger.ts      copies Swagger UI into public/docs at build time
   verify-models.ts       validator vs. hostile fixtures
+  verify-notification-integrations.ts provider contract + credential encryption
   verify-auth.ts         registration, sign-in and password reset
   verify-upload.ts       upload -> board -> story
   verify-passkey.ts      WebAuthn in a real browser

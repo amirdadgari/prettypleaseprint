@@ -8,6 +8,9 @@ import { relativeTime } from "@/lib/catalog";
 import { AppHeader } from "@/components/app-header";
 import { Kicker, StatusChip } from "@/components/ui";
 import { ColorSwatch } from "@/components/color-swatch";
+import { NotificationIntegrationsPanel } from "@/components/notification-integrations-panel";
+import { Toast } from "@/components/toast";
+import { listNotificationIntegrations } from "@/lib/notification-integrations";
 
 import type { StoryStatus } from "@prisma/client";
 
@@ -37,13 +40,17 @@ const PRINTED: StoryStatus[] = ["Delivery", "Done"];
 
 type Card = { value: string; label: string; skin: string };
 
-export default async function ProfilePage() {
-  const user = await requireUser("/me");
+export default async function ProfilePage({
+  searchParams,
+}: {
+  searchParams: Promise<{ toast?: string; error?: string }>;
+}) {
+  const [{ toast, error }, user] = await Promise.all([searchParams, requireUser("/me")]);
   const owner = await printerName();
   const isAdmin = user.role === "admin";
   const scope = storyScope(user);
 
-  const [stories, finished, beers, favourite, waiting, bytes] = await Promise.all([
+  const [stories, finished, beers, favourite, waiting, bytes, integrations] = await Promise.all([
     db.story.findMany({
       where: scope,
       orderBy: { createdAt: "desc" },
@@ -66,6 +73,7 @@ export default async function ProfilePage() {
       where: { AND: [scope, { status: { in: PRINTED } }] },
       _sum: { fileSize: true },
     }),
+    isAdmin ? listNotificationIntegrations(user.id) : Promise.resolve([]),
   ]);
 
   const inHand = stories.filter((s) => s.status === "Done").length;
@@ -139,6 +147,10 @@ export default async function ProfilePage() {
           ))}
         </div>
 
+        {isAdmin && (
+          <NotificationIntegrationsPanel integrations={integrations} error={error} />
+        )}
+
         <h2 className="m-0 mb-[13.2px] font-display text-[26px] text-ink">
           {isAdmin ? "Everything the group has sent you" : "Your orders"}
         </h2>
@@ -193,6 +205,8 @@ export default async function ProfilePage() {
           still moving.
         </p>
       </main>
+
+      {toast && <Toast>{toast}</Toast>}
     </>
   );
 }

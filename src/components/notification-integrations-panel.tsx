@@ -6,7 +6,7 @@ import {
   disconnectIntegrationAction,
   testIntegrationAction,
   toggleIntegrationAction,
-} from "@/app/me/notification-actions";
+} from "@/app/settings/notification-actions";
 
 export function NotificationIntegrationsPanel({
   integrations,

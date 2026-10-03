@@ -43,7 +43,7 @@ function assertAdmin(actor: Actor) {
 }
 
 function refresh() {
-  revalidatePath("/me");
+  revalidatePath("/settings");
 }
 
 export function listNotificationIntegrations(userId: string): Promise<NotificationIntegrationRow[]> {
@@ -178,7 +178,7 @@ function safeDeliveryError(error: unknown): string {
   if (error instanceof BaleProblem || error instanceof NotificationIntegrationProblem) {
     return error.message.slice(0, 240);
   }
-  return "Delivery failed. Test the integration from your profile.";
+  return "Delivery failed. Test the integration from Settings.";
 }
 
 function notificationUrl(storyId?: number | null, featureId?: number | null): string {

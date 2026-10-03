@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
+import Link from "next/link";
 import { authClient } from "@/lib/auth-client";
 
 /**
@@ -58,6 +59,22 @@ export function UserMenu({
           <p className="m-0 mt-[8.8px] inline-block rounded-chip border-2 border-ink bg-cream-2 px-[8px] font-mono text-[10.5px] font-bold uppercase tracking-[0.08em] text-ink">
             {role === "admin" ? "Printer owner" : "Invited member"}
           </p>
+
+          {role === "admin" && (
+            <div className="mt-[13.2px] border-t-2 border-dashed border-rule pt-[13.2px]">
+              <Link
+                href="/settings"
+                onClick={() => setOpen(false)}
+                className="font-bold text-[14px] text-cherry-dk underline underline-offset-2 hover:text-cherry"
+              >
+                Settings →
+              </Link>
+              <p className="m-0 mt-[2px] font-mono text-[11.5px] text-ink-3">
+                Notification preferences and integrations.
+              </p>
+            </div>
+          )}
+
           {/* How you sign in, and a way to change it. Without this the only
               passkey prompt in the whole app is the one at invite time. */}
           <div className="mt-[13.2px] border-t-2 border-dashed border-rule pt-[13.2px]">

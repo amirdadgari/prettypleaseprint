@@ -13,7 +13,7 @@ import {
 
 function back(params: Record<string, string>): never {
   const query = new URLSearchParams(params).toString();
-  redirect(`/me?${query}#notifications`);
+  redirect(`/settings?${query}#notifications`);
 }
 
 function integrationId(formData: FormData): string {

@@ -16,6 +16,31 @@ Notable changes. Every entry names a released version; deployments pin
   snapshots when catalogue entries later change. `npm run verify:catalog`
   covers the owner-only forms, ordering, validation, and snapshot contract.
 
+  Five things were put right in review, each of them found by running it
+  against a database that already had tickets rather than a fresh one:
+
+  - **A rollback could not file a request.** The migration dropped the
+    `Material` enum, which the previous image's client still casts every insert
+    to. Rolled back onto the migrated database, every page rendered and every
+    upload answered 500. A follow-up migration puts the type back, unused.
+  - **The colour band on every board card had vanished**, and "whatever"
+    tickets showed a clipped question mark in the corner instead. The swatch
+    component and its caller disagreed about `display`.
+  - **Printing a ticket again lost its swatch and ignored the shelf.** The copy
+    came back solid, and it worked for a colour the owner had just retired
+    while a fresh upload of the same colour was refused. A re-queue now makes
+    the same catalogue lookup an upload does.
+  - **Old "Whatever's on" tickets had been repainted** from grey to purple in
+    the viewer and the audit tally. Their representative colour is back to
+    what they were filed with; the rainbow stays in the swatch.
+  - **The catalogue page ran off the side of a phone**, and `/history` drew
+    gradients as flat dots.
+
+  `GET /api/catalog` is new: once the choices stopped being a fixed list the
+  OpenAPI document could no longer enumerate them, and reading the upload
+  page's HTML was the only way for an API client to learn a valid pair. A
+  ticket's `color` now carries `style` and `mode` beside `hex`.
+
 - **Rocket Loader has to be off, and the docs now say so.** Reported by NelsonFx
   on the pull request that added the tunnel overlay, and it is the first thing an
   orange-clouded deployment hits. Cloudflare's Rocket Loader rewrites every

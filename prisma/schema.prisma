@@ -251,6 +251,18 @@ enum StoryStatus {
   Declined
 }
 
+/// Unused, and kept on purpose. `Story.material` was this enum until materials
+/// became owner-managed text. The previous image's client still casts every
+/// insert to it, and the deploy wizard rolls back to that image when a deploy
+/// fails its health check — with the type gone, nobody could file a request
+/// after a rollback. Drop it once no deployment can roll back past this point.
+enum Material {
+  PLA
+  PETG
+  TPU
+  Resin
+}
+
 enum CatalogColorMode {
   solid
   gradient

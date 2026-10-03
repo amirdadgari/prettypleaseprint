@@ -82,9 +82,12 @@ export default async function CatalogPage({
           <Button type="submit" variant="secondary">Add material</Button>
         </form>
 
-        <div className="grid gap-[22px] lg:grid-cols-2">
+        {/* `grid-cols-1` and `min-w-0`, not a bare `grid`: an implicit track is as
+            wide as its widest content, and a gradient's CSS string is one long
+            unbreakable line — it pushed every panel off the side of a phone. */}
+        <div className="grid grid-cols-1 gap-[22px] lg:grid-cols-2">
           {materials.map((material, materialIndex) => (
-            <section key={material.id} className={`rounded-panel border-[3px] border-ink p-[22px] shadow-stamp ${material.active ? "bg-porcelain" : "bg-cream-2"}`}>
+            <section key={material.id} className={`min-w-0 rounded-panel border-[3px] border-ink p-[22px] shadow-stamp ${material.active ? "bg-porcelain" : "bg-cream-2"}`}>
               <div className="mb-[17.6px] flex flex-wrap items-center gap-[11px]">
                 <EditMaterialInline id={material.id} name={material.name} />
                 <OrderButtons

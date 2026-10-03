@@ -67,6 +67,7 @@ no header that names a user.
 | `GET` `POST` | `/api/stories/{id}/comments` | The conversation on a ticket. |
 | `GET` | `/api/notifications` | Your Activity feed. |
 | `POST` | `/api/notifications/read` | Mark one read, or all of them. |
+| `GET` | `/api/catalog` | The materials and colours on offer right now. |
 | `POST` | `/api/upload` | Upload a model and open a request. Multipart. |
 | `GET` | `/api/models/{id}` | The model's bytes. |
 | `GET` | `/api/openapi.json` | This surface, machine-readable. |
@@ -111,9 +112,10 @@ upload leaves nothing behind. The uploader comes from the session: an
 `uploaderId` or a `status` in the body is ignored.
 
 Material and colour values come from the owner's live catalogue, not a fixed
-API enum. Fetch the upload page to see the currently offered combinations. The
-server checks the pair again when the upload arrives, so a retired or removed
-choice is refused even if an older client still posts it.
+API enum. `GET /api/catalog` lists the pairs on offer right now — the same read
+the request form makes — as `{ materials: [{ name, colors: [{ name, hex, style,
+mode }] }] }`. The server checks the pair again when the upload arrives, so a
+retired or removed choice is refused even if an older client still posts it.
 
 ```bash
 curl -s https://print.example/api/upload \

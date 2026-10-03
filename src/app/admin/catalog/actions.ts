@@ -12,6 +12,12 @@ import { COLOR_MODES } from "@/lib/catalog";
 
 const Name = z.string().trim().min(1).max(40).transform((value) => value.replace(/\s+/g, " "));
 const Hex = z.string().regex(/^#[0-9a-f]{6}$/i).transform((value) => value.toLowerCase());
+/**
+ * What a "whatever" colour stands for where a single colour is needed: the
+ * 3D viewer and the audit tally. A neutral grey, because the colour is by
+ * definition not known yet. The rainbow is the swatch, not the model.
+ */
+const WHATEVER_HEX = "#b6bcc2";
 const WHATEVER_STYLE = "linear-gradient(135deg, #e4322f 0%, #f6c945 20%, #43aa8b 40%, #2787c9 60%, #7557c7 80%, #e4328c 100%)";
 const Direction = z.enum(["up", "down"]);
 const Mode = z.enum(COLOR_MODES);
@@ -27,7 +33,7 @@ function colorInput(formData: FormData) {
   const parsedHexTo = mode !== "gradient" ? null : Hex.safeParse(formData.get("hexTo"));
   if (parsedHex && !parsedHex.success) back("error", "Choose a valid colour.");
   if (parsedHexTo && !parsedHexTo.success) back("error", "Choose a valid second gradient colour.");
-  const hex = mode === "whatever" ? "#7557c7" : parsedHex!.data;
+  const hex = mode === "whatever" ? WHATEVER_HEX : parsedHex!.data;
   const style = mode === "whatever"
     ? WHATEVER_STYLE
     : mode === "gradient"

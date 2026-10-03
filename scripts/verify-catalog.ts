@@ -136,7 +136,7 @@ async function restoreDefaults() {
             { name: "Slate", hex: "#4a5d78", style: "#4a5d78", mode: "solid", sortOrder: 1 },
             { name: "Bone white", hex: "#eaecee", style: "#eaecee", mode: "solid", sortOrder: 2 },
             { name: "Graphite", hex: "#1b2126", style: "#1b2126", mode: "solid", sortOrder: 3 },
-            { name: "Whatever's on", hex: "#7557c7", style: RAINBOW, mode: "whatever", sortOrder: 4 },
+            { name: "Whatever's on", hex: "#b6bcc2", style: RAINBOW, mode: "whatever", sortOrder: 4 },
           ],
         },
       },
@@ -180,6 +180,13 @@ async function main() {
 
   section("the owner creates materials and every swatch type");
   let page = await (await owner.go(`${APP}/admin/catalog`)).text();
+
+  // The owner's own form, action id and all, posted with the client's session.
+  // A bare POST would prove nothing: without the action id Next never routes
+  // it, and the row would be absent whether or not anything guarded it.
+  const forged = await client.submit(`${APP}/admin/catalog`, page, findForm(page, ['placeholder="ASA"']), { name: "Forged" });
+  check("a client cannot drive the owner's form", forged.status === 404, `status ${forged.status}`);
+  check("and nothing was added", await db.catalogMaterial.count({ where: { name: "Forged" } }) === 0);
   await owner.submit(`${APP}/admin/catalog`, page, findForm(page, ['placeholder="ASA"']), { name: "ASA" });
   const asa = await db.catalogMaterial.findUnique({ where: { name: "ASA" } });
   check("a material can be added", !!asa);
@@ -230,13 +237,50 @@ async function main() {
 
   const story = await db.story.findFirst({ where: { title: "Catalog test" }, orderBy: { id: "desc" } });
   check("the ticket snapshots the swatch mode", story?.colorMode === "gradient");
+  section("the catalogue over the API");
+  const anonymous = await fetch(`${APP}/api/catalog`);
+  check("it needs a session", anonymous.status === 401, `status ${anonymous.status}`);
+  const listed = await (await client.raw(`${APP}/api/catalog`)).json() as {
+    materials?: { name: string; colors: { name: string; mode: string; id?: string }[] }[];
+  };
+  const listedAsa = listed.materials?.find((m) => m.name === "ASA");
+  check("it lists what is on offer", Boolean(listedAsa?.colors.some((c) => c.name === "Sunset" && c.mode === "gradient")));
+  check("it leaves out what is turned off", !listedAsa?.colors.some((c) => c.name === "Black"));
+  check("it does not hand out row ids", listedAsa?.colors.every((c) => c.id === undefined) === true);
+
+  section("printing it again answers to the shelf");
+  await db.story.update({ where: { id: story!.id }, data: { status: "Done" } });
+  let history = await (await client.go(`${APP}/history`)).text();
+  check("history draws the gradient, not a flat dot", history.includes("#f6c945"));
+  const again = () => findForm(history, ['name="storyId"', `value="${story!.id}"`]);
+  await client.submit(`${APP}/history`, history, again(), {});
+  const copy = await db.story.findFirst({ where: { uploaderId: clientUser.id }, orderBy: { id: "desc" } });
+  check("a re-queued ticket is a new one", Boolean(copy) && copy!.id !== story!.id && copy!.status === "Requested");
+  check("and it keeps the swatch",
+    copy?.colorMode === "gradient" && Boolean(copy.colorStyle?.includes("#f6c945")),
+    `mode ${copy?.colorMode}, style ${copy?.colorStyle}`);
+
+  await db.catalogColor.update({ where: { id: colors[1]!.id }, data: { active: false } });
+  const before = await db.story.count();
+  history = await (await client.go(`${APP}/history`)).text();
+  const stale = await client.submit(`${APP}/history`, history, again(), {});
+  check("a colour that is off the shelf cannot be re-queued", await db.story.count() === before,
+    `${await db.story.count()} tickets, was ${before}`);
+  check("and the requester is told why",
+    decodeURIComponent(stale.headers.get("location") ?? "").replace(/\+/g, " ").includes("not on the shelf"),
+    stale.headers.get("location") ?? "no redirect");
+
   await db.catalogColor.delete({ where: { id: colors[1]!.id } });
   const unchanged = await db.story.findUnique({ where: { id: story!.id } });
   check("deleting a catalogue colour leaves old tickets unchanged",
     unchanged?.colorName === "Sunset" && unchanged.colorMode === "gradient" && Boolean(unchanged.colorStyle?.includes("#f6c945")));
 
   section("empty catalogue fails visibly");
-  await db.catalogMaterial.update({ where: { id: asa!.id }, data: { active: false } });
+  page = await (await owner.go(`${APP}/admin/catalog`)).text();
+  await owner.submit(`${APP}/admin/catalog`, page, findForm(page, [`value="${asa!.id}"`, "Turn"]), {});
+  check("a material can be turned off", (await db.catalogMaterial.findUnique({ where: { id: asa!.id } }))?.active === false);
+  check("turning it off is audited",
+    await db.auditEvent.count({ where: { action: "catalog.material_availability_changed", subject: "ASA" } }) === 1);
   const empty = await (await client.go(`${APP}/upload`)).text();
   check("the upload page explains that nothing is available", empty.includes("has not listed any available material"));
 

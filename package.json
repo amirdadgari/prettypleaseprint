@@ -42,6 +42,7 @@
     "verify:frr": "tsx scripts/verify-frr.ts",
     "verify:benefits": "tsx scripts/verify-benefits.ts",
     "verify:catalog": "tsx scripts/verify-catalog.ts",
+    "verify:notifications": "tsx scripts/verify-notification-integrations.ts",
     "verify:api": "tsx scripts/verify-api.ts",
     "vendor:swagger": "tsx scripts/vendor-swagger.ts",
     "migrate:storage": "tsx scripts/export-storage.ts"

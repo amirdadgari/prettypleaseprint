@@ -67,11 +67,12 @@ model User {
   accounts Account[]
   passkeys Passkey[]
 
-  invitesSent   Invite[]       @relation("InviteAuthor")
-  auditEvents   AuditEvent[]   @relation("AuditActor")
-  stories       Story[]
-  comments      Comment[]
-  notifications Notification[]
+  invitesSent              Invite[]                  @relation("InviteAuthor")
+  auditEvents              AuditEvent[]              @relation("AuditActor")
+  stories                  Story[]
+  comments                 Comment[]
+  notifications            Notification[]
+  notificationIntegrations NotificationIntegration[]
 
   /// The 'frr' feature-request track — a parallel backlog to the print one.
   featureRequests FeatureRequest[]
@@ -110,8 +111,8 @@ model Account {
   /// dropped because the deploy wizard rolls back to the previous image when a
   /// deploy fails its health check, and that image's client still selects it —
   /// drop it once no deployment can roll back past this point.
-  issuer     String?
-  providerId String
+  issuer                String?
+  providerId            String
   userId                String
   user                  User      @relation(fields: [userId], references: [id], onDelete: Cascade)
   accessToken           String?
@@ -281,20 +282,20 @@ model Story {
   uploaderId String
   uploader   User   @relation(fields: [uploaderId], references: [id], onDelete: Cascade)
 
-  quantity  Int      @default(1)
+  quantity   Int              @default(1)
   /// Snapshots the catalog label at submission time. Catalog entries may be
   /// renamed or disabled later without rewriting an old order.
-  material  String   @default("PETG")
-  colorName String
-  colorHex  String
+  material   String           @default("PETG")
+  colorName  String
+  colorHex   String
   /// CSS swatch snapshot. Gradients render here while colorHex remains the
   /// representative solid used by the 3D viewer.
   colorStyle String?
   /// Snapshot of how the swatch behaves. Kept separate from the editable
   /// label so renaming "Whatever's on" cannot change an old ticket.
   colorMode  CatalogColorMode @default(solid)
-  tip       String
-  note      String   @default("")
+  tip        String
+  note       String           @default("")
 
   /// Free-text print settings the requester optionally notes (layer height,
   /// infill, supports, temps…), shown to the owner on the ticket so specifics
@@ -333,12 +334,12 @@ model Story {
 /// A material the printer owner can currently offer. Disabling an entry only
 /// removes it from new requests; stories keep their material snapshot.
 model CatalogMaterial {
-  id        String   @id @default(cuid())
-  name      String   @unique
-  active    Boolean  @default(true)
-  sortOrder Int      @default(0)
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
+  id        String         @id @default(cuid())
+  name      String         @unique
+  active    Boolean        @default(true)
+  sortOrder Int            @default(0)
+  createdAt DateTime       @default(now())
+  updatedAt DateTime       @updatedAt
   colors    CatalogColor[]
 
   @@index([active, sortOrder])
@@ -348,19 +349,19 @@ model CatalogMaterial {
 /// A spool colour belongs to one material: the upload form changes its colour
 /// choices as soon as the requester picks a different material.
 model CatalogColor {
-  id         String          @id @default(cuid())
+  id         String           @id @default(cuid())
   materialId String
-  material   CatalogMaterial @relation(fields: [materialId], references: [id], onDelete: Cascade)
+  material   CatalogMaterial  @relation(fields: [materialId], references: [id], onDelete: Cascade)
   name       String
   hex        String
   /// A CSS colour or linear-gradient used by swatches in the UI.
   style      String
   /// `solid`, `gradient`, or `whatever`; never inferred from the display name.
   mode       CatalogColorMode @default(solid)
-  active     Boolean         @default(true)
-  sortOrder  Int             @default(0)
-  createdAt  DateTime        @default(now())
-  updatedAt  DateTime        @updatedAt
+  active     Boolean          @default(true)
+  sortOrder  Int              @default(0)
+  createdAt  DateTime         @default(now())
+  updatedAt  DateTime         @updatedAt
 
   @@unique([materialId, name])
   @@index([materialId, active, sortOrder])
@@ -381,22 +382,45 @@ model Comment {
 }
 
 model Notification {
-  id          String   @id @default(cuid())
+  id          String          @id @default(cuid())
   recipientId String
-  recipient   User     @relation(fields: [recipientId], references: [id], onDelete: Cascade)
+  recipient   User            @relation(fields: [recipientId], references: [id], onDelete: Cascade)
   storyId     Int?
-  story       Story?   @relation(fields: [storyId], references: [id], onDelete: Cascade)
+  story       Story?          @relation(fields: [storyId], references: [id], onDelete: Cascade)
   /// A notification points at a print story OR a feature request (or neither,
   /// for a withdrawal). The two id columns are mutually exclusive in practice;
   /// the Activity feed routes to /story or /frr on whichever is set.
   featureId   Int?
   feature     FeatureRequest? @relation(fields: [featureId], references: [id], onDelete: Cascade)
   text        String
-  read        Boolean  @default(false)
-  createdAt   DateTime @default(now())
+  read        Boolean         @default(false)
+  createdAt   DateTime        @default(now())
 
   @@index([recipientId, read])
   @@map("notification")
+}
+
+/// An external delivery channel for a user's in-app notifications. Provider
+/// credentials are encrypted before they reach this table; `secret` is never
+/// rendered back to the browser or written to the audit trail.
+model NotificationIntegration {
+  id              String    @id @default(cuid())
+  userId          String
+  user            User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  /// Kept as text so adding a provider does not require changing a database
+  /// enum. Application code owns the supported-provider list.
+  provider        String
+  destination     String
+  secret          String
+  active          Boolean   @default(true)
+  lastDeliveredAt DateTime?
+  lastError       String?
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+
+  @@unique([userId, provider])
+  @@index([userId, active])
+  @@map("notificationIntegration")
 }
 
 // ===========================================================================

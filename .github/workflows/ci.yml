@@ -52,6 +52,8 @@ jobs:
         run: npx prisma generate
       - name: Typecheck
         run: npx tsc --noEmit
+      - name: Notification provider adapters
+        run: npm run verify:notifications
       # Cross-checks every tracked file against known credential shapes. In CI
       # there are no local .env files, so the value-matching pass has nothing
       # to compare against and only the pattern pass runs — which is exactly

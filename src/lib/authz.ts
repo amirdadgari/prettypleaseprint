@@ -5,6 +5,7 @@ import { notFound, redirect } from "next/navigation";
 
 import { auth } from "@/lib/auth";
 import { db } from "@/lib/db";
+import { deliverNotification } from "@/lib/notification-integrations";
 import { storyScope, type Actor } from "@/lib/scope";
 
 // The pure rules live in `scope.ts` so they can be imported without pulling in
@@ -147,6 +148,13 @@ export async function notify(opts: {
       text: opts.text,
     },
   });
+  try {
+    await deliverNotification(opts);
+  } catch (error) {
+    // The in-app row above is the source of truth. A broken provider table or
+    // outbound network must not turn the action that produced it into a 500.
+    console.error("[notifications] external delivery fan-out failed", error);
+  }
 }
 
 /** Notifications are per recipient, and scoped the same way stories are. */

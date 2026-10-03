@@ -43,6 +43,12 @@ export type AuditAction =
   | "comment.added"
   | "file.downloaded"
   | "file.refused"
+  // external notification integrations
+  | "notification.integration_connected"
+  | "notification.integration_tested"
+  | "notification.integration_enabled"
+  | "notification.integration_disabled"
+  | "notification.integration_disconnected"
   // catalog
   | "catalog.material_added"
   | "catalog.material_updated"

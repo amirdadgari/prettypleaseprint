@@ -17,6 +17,7 @@ import {
 } from "@/lib/scope";
 import { copyModel, deleteModel, storageKeyFor } from "@/lib/storage";
 import { extensionOf } from "@/lib/models";
+import { availableSelection } from "@/lib/catalog-data";
 
 /**
  * Everything that can happen to a ticket, in one place.
@@ -130,6 +131,8 @@ export const STORY_FIELDS = {
   material: true,
   colorName: true,
   colorHex: true,
+  colorStyle: true,
+  colorMode: true,
   tip: true,
   note: true,
   filename: true,
@@ -172,6 +175,8 @@ const HISTORY_FIELDS = {
   status: true,
   material: true,
   colorHex: true,
+  colorStyle: true,
+  colorMode: true,
   filename: true,
   tip: true,
   flagged: true,
@@ -572,7 +577,7 @@ export async function requeueStory(actor: Actor, id: number) {
     where: { AND: [{ id }, storyScope(actor)] },
     select: {
       id: true, title: true, quantity: true, material: true, colorName: true,
-      colorHex: true, tip: true, note: true, printSettings: true,
+      tip: true, note: true, printSettings: true,
       filename: true, fileSize: true,
       mimeType: true, storageKey: true, dims: true, uploaderId: true,
     },
@@ -580,6 +585,20 @@ export async function requeueStory(actor: Actor, id: number) {
   if (!src) throw problem(404, "That ticket no longer exists.");
   if (src.uploaderId !== actor.id) {
     throw problem(403, "Only the person who asked for it can print it again.");
+  }
+
+  // A re-queue is a new request, so it answers to the shelf as it is today —
+  // the same lookup the upload makes. Without it this was the one way to ask
+  // for a material or colour the owner had taken off, and the copy would have
+  // carried the old ticket's swatch rather than what is actually on offer.
+  // The old ticket itself is untouched either way.
+  const selection = await availableSelection(src.material, src.colorName);
+  if (!selection) {
+    throw problem(
+      409,
+      `${src.material} in ${src.colorName} is not on the shelf any more — ` +
+        `order it fresh and pick from what is.`,
+    );
   }
 
   // Copy the object first, so a failure here opens no ticket that points at
@@ -600,7 +619,9 @@ export async function requeueStory(actor: Actor, id: number) {
       quantity: src.quantity,
       material: src.material,
       colorName: src.colorName,
-      colorHex: src.colorHex,
+      colorHex: selection.hex,
+      colorStyle: selection.style,
+      colorMode: selection.mode,
       tip: src.tip,
       note: src.note,
       printSettings: src.printSettings,
